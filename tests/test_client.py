@@ -84,9 +84,30 @@ async def test_daily_rate_limit_raises_with_the_reset_time(client, exact, sleeps
         429, headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(reset)}
     )
 
-    with pytest.raises(RateLimitedError, match="2026-10-17T13:00"):
+    with pytest.raises(RateLimitedError, match="daily.*2026-10-17T13:00"):
         await client.list("crm/Accounts", select=["ID"], limit=1)
     assert sleeps == []
+
+
+async def test_minutely_limit_without_a_reset_header_waits_a_whole_window(client, exact, sleeps):
+    responses = iter(
+        [
+            httpx.Response(429, headers={"X-RateLimit-Minutely-Remaining": "0", "X-RateLimit-Remaining": "4000"}),
+            httpx.Response(200, json=odata([{"ID": "x"}])),
+        ]
+    )
+    exact.handler = lambda r: next(responses)
+
+    assert await client.list("crm/Accounts", select=["ID"], limit=1) == [{"ID": "x"}]
+    assert sleeps == [61.0]
+
+
+async def test_minutely_limit_still_hit_after_waiting_says_so(client, exact, sleeps):
+    exact.handler = lambda r: httpx.Response(429, headers={"X-RateLimit-Remaining": "4000"})
+
+    with pytest.raises(RateLimitedError, match="per-minute"):
+        await client.list("crm/Accounts", select=["ID"], limit=1)
+    assert sleeps == [61.0]
 
 
 async def test_unauthorised_reloads_the_token_and_retries_once(client, exact):
