@@ -95,15 +95,27 @@ TEST_DATABASE_URL=postgresql://... uv run pytest
 uv run ruff format . && uv run ruff check .
 ```
 
-## Status: not yet verified against a live Exact company
+## Status: not yet run against a live Exact company
 
-The behaviour is tested against recorded API shapes, not a real administration. Before relying
-on it, check against an Exact test company:
+The tests run against recorded API shapes, not a real administration.
 
-- The refresh window (assumed: the last 30 seconds of the access token's life) and whether
-  every refresh rotates the refresh token.
-- The rate-limit header names and units (`X-RateLimit-Minutely-Reset` as epoch milliseconds).
-- These field names: `read/financial/AgingReceivablesList` age-group fields,
-  `financial/ReportingBalance` (`BalanceType eq 'W'` for P&L), and the `$select` lists in
-  `exact_mcp/tools.py`.
-- The sales invoice and order status codes (`INVOICE_STATUS`, `ORDER_STATUS`).
+Checked against [Exact's REST reference](https://start.exactonline.nl/docs/HlpRestAPIResources.aspx):
+
+- Every endpoint path and `$select` field in `exact_mcp/tools.py`, including the
+  `AgingReceivablesList` age groups and `ReportingBalance` (`BalanceType` `W` = profit & loss).
+- The sales invoice status codes (10 draft, 20 open, 50 processed) and the sales order status
+  codes (12 open, 20 partial, 21 complete, 45 cancelled).
+
+Consistent across third-party sources, but not in Exact's own docs:
+
+- The access token lasts 10 minutes, and Exact refuses a refresh before its last ~30 seconds.
+- Every refresh rotates the refresh token, and the old one stops working.
+
+Still to check on a test company:
+
+- Whether a 429 carries `X-RateLimit-Minutely-Reset`, and in which unit.
+  - Without it, the server waits out a full minute before retrying once.
+  - It tells the per-minute and daily limits apart by `X-RateLimit-Remaining`.
+- The sign convention of `ReportingBalance.Amount` (assumed: debit is positive).
+- How long an unused refresh token lives. Reports say 30 days, which would mean a server
+  idle for a month needs reconnecting.
