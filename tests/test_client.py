@@ -1,0 +1,111 @@
+import httpx
+import pytest
+
+from exact_mcp.client import ExactError, RateLimitedError
+
+from .conftest import NOW, odata
+
+BASE = "https://start.exactonline.nl/api/v1"
+
+
+async def test_list_follows_next_links_until_the_limit(client, exact):
+    pages = {
+        None: odata([{"Name": f"a{i}"} for i in range(60)], f"{BASE}/123/crm/Accounts?$skiptoken=x"),
+        "x": odata([{"Name": f"b{i}"} for i in range(60)], f"{BASE}/123/crm/Accounts?$skiptoken=y"),
+    }
+    exact.handler = lambda r: httpx.Response(200, json=pages[r.url.params.get("$skiptoken")])
+
+    rows = await client.list("crm/Accounts", select=["Name"], limit=100)
+
+    assert len(rows) == 100
+    assert len(exact.requests) == 2
+    assert "%24top" not in str(exact.requests[0].url)
+    assert exact.requests[1].url.params.get("$select") is None
+
+
+async def test_small_limit_uses_top_and_sends_auth_and_json_headers(client, exact):
+    exact.handler = lambda r: httpx.Response(200, json=odata([{"Name": "  Acme  "}]))
+
+    rows = await client.list("crm/Accounts", select=["ID", "Name"], filters=["a", "b"], orderby="Name", limit=5)
+
+    request = exact.requests[0]
+    assert rows == [{"Name": "Acme"}]
+    assert request.url.params["$top"] == "5"
+    assert request.url.params["$filter"] == "a and b"
+    assert request.url.params["$select"] == "ID,Name"
+    assert request.headers["Authorization"] == "Bearer access-1"
+    assert request.headers["Accept"] == "application/json"
+
+
+async def test_explicit_division_overrides_the_default(client, exact):
+    exact.handler = lambda r: httpx.Response(200, json=odata([]))
+    await client.list("crm/Accounts", select=["ID"], limit=1, division=999)
+    assert exact.requests[0].url.path == "/api/v1/999/crm/Accounts"
+
+
+async def test_default_division_comes_from_me_once(client, exact):
+    client._division = None
+
+    def handler(request):
+        if request.url.path.endswith("/current/Me"):
+            return httpx.Response(200, json=odata([{"CurrentDivision": 42, "FullName": "D", "UserName": "d"}]))
+        return httpx.Response(200, json=odata([]))
+
+    exact.handler = handler
+    await client.list("crm/Accounts", select=["ID"], limit=1)
+    await client.list("crm/Accounts", select=["ID"], limit=1)
+
+    paths = [r.url.path for r in exact.requests]
+    assert paths == ["/api/v1/current/Me", "/api/v1/42/crm/Accounts", "/api/v1/42/crm/Accounts"]
+
+
+async def test_minutely_rate_limit_is_waited_out_once(client, exact, sleeps):
+    responses = iter(
+        [
+            httpx.Response(
+                429,
+                headers={
+                    "X-RateLimit-Minutely-Remaining": "0",
+                    "X-RateLimit-Minutely-Reset": str(int((NOW.timestamp() + 12) * 1000)),
+                },
+            ),
+            httpx.Response(200, json=odata([{"ID": "x"}])),
+        ]
+    )
+    exact.handler = lambda r: next(responses)
+
+    assert await client.list("crm/Accounts", select=["ID"], limit=1) == [{"ID": "x"}]
+    assert sleeps == [12.5]
+
+
+async def test_daily_rate_limit_raises_with_the_reset_time(client, exact, sleeps):
+    reset = int((NOW.timestamp() + 3600) * 1000)
+    exact.handler = lambda r: httpx.Response(
+        429, headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(reset)}
+    )
+
+    with pytest.raises(RateLimitedError, match="2026-10-17T13:00"):
+        await client.list("crm/Accounts", select=["ID"], limit=1)
+    assert sleeps == []
+
+
+async def test_unauthorised_reloads_the_token_and_retries_once(client, exact):
+    responses = iter([httpx.Response(401), httpx.Response(200, json=odata([]))])
+    exact.handler = lambda r: next(responses)
+
+    assert await client.list("crm/Accounts", select=["ID"], limit=1) == []
+    assert len(exact.requests) == 2
+
+
+async def test_persistent_unauthorised_raises(client, exact):
+    exact.handler = lambda r: httpx.Response(401, text="Unauthorized")
+    with pytest.raises(ExactError, match="401"):
+        await client.list("crm/Accounts", select=["ID"], limit=1)
+
+
+async def test_exact_error_message_is_surfaced(client, exact):
+    exact.handler = lambda r: httpx.Response(
+        400, json={"error": {"code": "", "message": {"lang": "", "value": "Invalid field: Nope"}}}
+    )
+    with pytest.raises(ExactError, match="Invalid field: Nope"):
+        await client.list("crm/Accounts", select=["Nope"], limit=1)
