@@ -10,9 +10,8 @@ from .config import Settings
 from .tokens import TokenManager
 
 PAGE_SIZE = 60
-# Waiting out the per-minute limit is fine inside a tool call; anything longer is the daily
-# limit, which no caller should sit through.
-MAX_MINUTELY_WAIT = 65.0
+# Waiting out the per-minute limit is fine inside a tool call; the daily limit is not.
+MAX_MINUTELY_WAIT = 61.0
 
 
 class ExactError(Exception):
@@ -105,27 +104,28 @@ class ExactClient:
                 self._tokens.invalidate()
                 continue
             if response.status_code == 429:
-                wait = self._minutely_wait(response)
-                if wait is not None and retry:
-                    await self._sleep(wait)
+                if response.headers.get("X-RateLimit-Remaining") == "0":
+                    raise RateLimitedError(self._daily_limit_message(response))
+                if retry:
+                    await self._sleep(self._minutely_wait(response))
                     continue
-                raise RateLimitedError(self._rate_limit_message(response))
+                raise RateLimitedError("Exact Online's per-minute API limit is still used up; try again in a minute.")
             if response.is_error:
                 raise ExactError(f"Exact Online returned {response.status_code}: {_error_message(response)}")
             return response.json()
         raise ExactError(f"Exact Online returned {response.status_code}: {_error_message(response)}")
 
-    def _minutely_wait(self, response: httpx.Response) -> float | None:
-        if response.headers.get("X-RateLimit-Minutely-Remaining") != "0":
-            return None
+    def _minutely_wait(self, response: httpx.Response) -> float:
+        # Exact's docs don't name the reset header, so without it wait out a whole window.
         reset_ms = response.headers.get("X-RateLimit-Minutely-Reset")
         if reset_ms is None:
-            return None
-        wait = max(int(reset_ms) / 1000 - self._clock(), 0) + 0.5
-        return wait if wait <= MAX_MINUTELY_WAIT else None
+            return MAX_MINUTELY_WAIT
+        return min(max(int(reset_ms) / 1000 - self._clock(), 0) + 0.5, MAX_MINUTELY_WAIT)
 
     @staticmethod
-    def _rate_limit_message(response: httpx.Response) -> str:
+    def _daily_limit_message(response: httpx.Response) -> str:
         reset_ms = response.headers.get("X-RateLimit-Reset")
-        when = datetime.fromtimestamp(int(reset_ms) / 1000, UTC).isoformat(timespec="minutes") if reset_ms else "later"
-        return f"Exact Online's API limit for this company is used up; it resets at {when}."
+        when = (
+            datetime.fromtimestamp(int(reset_ms) / 1000, UTC).isoformat(timespec="minutes") if reset_ms else "midnight"
+        )
+        return f"Exact Online's daily API limit for this company is used up; it resets at {when}."
