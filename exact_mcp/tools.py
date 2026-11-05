@@ -23,6 +23,32 @@ AccountId = Annotated[str, Field(description="Account ID (GUID) from search_acco
 
 INVOICE_STATUS = {"draft": 10, "open": 20, "processed": 50}
 ORDER_STATUS = {"open": 12, "partial": 20, "complete": 21, "cancelled": 45}
+# read/financial/Returns has no descriptions for its codes, so these are Exact's documented ones.
+RETURN_TYPES = {
+    31: "VAT",
+    32: "EC sales list",
+    33: "VAT listing",
+    34: "Intrastat",
+    35: "Fiscal fiches 281.50-325.50",
+    37: "Fiscal fiche 281.30",
+    38: "Fiscal fiche 281.50",
+    39: "Fiscal fiche 281.71",
+    46: "Income tax",
+    47: "Corporate tax",
+    146: "Payroll declaration",
+    189: "Official return",
+    200: "Annual statement",
+}
+RETURN_STATUS = {
+    -10: "None",
+    0: "Void",
+    5: "Rejected",
+    10: "Draft",
+    20: "Open",
+    30: "Approved",
+    40: "Realized",
+    50: "Processed",
+}
 
 ACCOUNT_FIELDS = ["ID", "Code", "Name", "City", "Country", "Email", "Phone", "IsSales", "IsSupplier"]
 OPEN_ITEM_FIELDS = [
@@ -66,6 +92,69 @@ ORDER_FIELDS = [
     "Description",
     "YourRef",
 ]
+# Sales and purchase entries share these; each adds its party, Customer or Supplier.
+ENTRY_FIELDS = [
+    "EntryID",
+    "EntryNumber",
+    "InvoiceNumber",
+    "EntryDate",
+    "DueDate",
+    "AmountDC",
+    "VATAmountDC",
+    "Currency",
+    "Description",
+    "YourRef",
+    "Status",
+    "StatusDescription",
+    "Type",
+    "TypeDescription",
+]
+AGING_FIELDS = [
+    "AccountId",
+    "AccountCode",
+    "AccountName",
+    "CurrencyCode",
+    "TotalAmount",
+    *(f"AgeGroup{n}{suffix}" for n in range(1, 5) for suffix in ("Description", "Amount")),
+]
+GL_ACCOUNT_FIELDS = [
+    "ID",
+    "Code",
+    "Description",
+    "Type",
+    "TypeDescription",
+    "BalanceType",
+    "BalanceSide",
+    "IsBlocked",
+]
+TRANSACTION_FIELDS = [
+    "Date",
+    "JournalCode",
+    "JournalDescription",
+    "EntryNumber",
+    "GLAccountCode",
+    "GLAccountDescription",
+    "AccountCode",
+    "AccountName",
+    "Description",
+    "AmountDC",
+    "InvoiceNumber",
+    "CostCenter",
+    "ProjectCode",
+]
+BANK_LINE_FIELDS = [
+    "Date",
+    "EntryNumber",
+    "Description",
+    "AmountDC",
+    "AccountCode",
+    "AccountName",
+    "GLAccountCode",
+    "GLAccountDescription",
+    "OurRef",
+]
+# Bulk endpoints return 1,000 lines a call, so this is at most 10 calls.
+MAX_TRANSACTION_LINES = 10_000
 
 # Every failure a caller can act on, surfaced as the tool's error text rather than masked.
 _USER_ERRORS = (ConfigError, NotConnectedError, TokenRefreshError, ExactError, ValueError)
@@ -108,6 +197,57 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
             "user": me["FullName"],
             "default_division": await client.division(),
             "divisions": await client.list("system/Divisions", select=["Code", "Description"], limit=1000),
+        }
+
+    @tool
+    async def financial_overview(division: Division = None) -> dict:
+        """A first look at how a division is doing, in three calls: revenue, costs and result for
+        the current period and year against last year, outstanding and overdue invoices per
+        currency, and outstanding amounts per age bucket. Exact takes the current period from
+        today's date and works out the result as revenue minus costs."""
+        client = await get_client()
+        div = await client.division(division)
+        pnl = await client.list(
+            "read/financial/ProfitLossOverview",
+            select=[
+                "CurrencyCode",
+                "CurrentYear",
+                "CurrentPeriod",
+                "PreviousYear",
+                "PreviousYearPeriod",
+                *(
+                    f"{measure}{when}"
+                    for measure in ("Revenue", "Costs", "Result")
+                    for when in ("CurrentPeriod", "CurrentYear", "PreviousYear", "PreviousYearPeriod")
+                ),
+            ],
+            limit=1,
+            division=div,
+        )
+        outstanding = await client.list(
+            "read/financial/OutstandingInvoicesOverview",
+            select=[
+                "CurrencyCode",
+                *(
+                    f"{state}{side}Invoice{measure}"
+                    for side in ("Receivable", "Payable")
+                    for state in ("Outstanding", "Overdue")
+                    for measure in ("Amount", "Count")
+                ),
+            ],
+            limit=100,
+            division=div,
+        )
+        aging = await client.list(
+            "read/financial/AgingOverview",
+            select=["AgeGroup", "AgeGroupDescription", "CurrencyCode", "AmountReceivable", "AmountPayable"],
+            limit=100,
+            division=div,
+        )
+        return {
+            "profit_and_loss": pnl[0] if pnl else None,
+            "outstanding_invoices": outstanding,
+            "aging": aging,
         }
 
     @tool
@@ -181,24 +321,21 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
         """Unpaid purchase invoices (what is owed to suppliers), oldest due date first, with totals."""
         return await _open_items("read/financial/PayablesList", account_id, overdue_only, limit, division)
 
+    async def _aging(resource, limit, division) -> list[dict]:
+        client = await get_client()
+        return await client.list(
+            resource, select=AGING_FIELDS, orderby="TotalAmount desc", limit=limit, division=division
+        )
+
     @tool
     async def receivables_aging(limit: Limit = 100, division: Division = None) -> list[dict]:
         """Outstanding receivables per customer, split into Exact's age buckets."""
-        client = await get_client()
-        return await client.list(
-            "read/financial/AgingReceivablesList",
-            select=[
-                "AccountId",
-                "AccountCode",
-                "AccountName",
-                "CurrencyCode",
-                "TotalAmount",
-                *(f"AgeGroup{n}{suffix}" for n in range(1, 5) for suffix in ("Description", "Amount")),
-            ],
-            orderby="TotalAmount desc",
-            limit=limit,
-            division=division,
-        )
+        return await _aging("read/financial/AgingReceivablesList", limit, division)
+
+    @tool
+    async def payables_aging(limit: Limit = 100, division: Division = None) -> list[dict]:
+        """Outstanding payables per supplier, split into Exact's age buckets."""
+        return await _aging("read/financial/AgingPayablesList", limit, division)
 
     @tool
     async def search_sales_invoices(
@@ -209,7 +346,9 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
         limit: Limit = 25,
         division: Division = None,
     ) -> list[dict]:
-        """Sales invoices, newest first. Amounts are in the division's currency (AmountDC)."""
+        """Sales invoices made in Exact's invoicing module, newest first. Amounts are in the
+        division's currency (AmountDC). Sales booked another way, such as from another invoicing
+        system, are only in search_sales_entries."""
         filters = _date_range("InvoiceDate", invoice_date_from, invoice_date_to)
         if account_id:
             filters.append(f"InvoiceTo eq {odata.guid(account_id)}")
@@ -263,6 +402,34 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
         )
         return {**rows[0], "lines": lines}
 
+    async def _entries(resource, party, account_id, date_from, date_to, limit, division) -> list[dict]:
+        filters = _date_range("EntryDate", date_from, date_to)
+        if account_id:
+            filters.append(f"{party} eq {odata.guid(account_id)}")
+        client = await get_client()
+        return await client.list(
+            resource,
+            select=[party, f"{party}Name", *ENTRY_FIELDS],
+            filters=filters,
+            orderby="EntryDate desc",
+            limit=limit,
+            division=division,
+        )
+
+    @tool
+    async def search_sales_entries(
+        account_id: Annotated[str | None, Field(description="Only entries for this customer (GUID).")] = None,
+        invoice_date_from: date | None = None,
+        invoice_date_to: date | None = None,
+        limit: Limit = 25,
+        division: Division = None,
+    ) -> list[dict]:
+        """Booked sales invoices and credit notes (Type 21) in the sales journal, newest first.
+        Unlike search_sales_invoices, this includes invoices made outside Exact's invoicing module."""
+        return await _entries(
+            "salesentry/SalesEntries", "Customer", account_id, invoice_date_from, invoice_date_to, limit, division
+        )
+
     @tool
     async def search_sales_orders(
         account_id: Annotated[str | None, Field(description="Only orders from this customer (GUID).")] = None,
@@ -289,6 +456,57 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
         )
 
     @tool
+    async def search_purchase_invoices(
+        account_id: Annotated[str | None, Field(description="Only invoices from this supplier (GUID).")] = None,
+        invoice_date_from: date | None = None,
+        invoice_date_to: date | None = None,
+        limit: Limit = 25,
+        division: Division = None,
+    ) -> list[dict]:
+        """Booked purchase invoices and credit notes (Type 31), newest first."""
+        return await _entries(
+            "purchaseentry/PurchaseEntries", "Supplier", account_id, invoice_date_from, invoice_date_to, limit, division
+        )
+
+    @tool
+    async def get_purchase_invoice(
+        entry_id: Annotated[str, Field(description="EntryID (GUID) from search_purchase_invoices.")],
+        division: Division = None,
+    ) -> dict:
+        """One booked purchase invoice with its lines, each with the GL account it is booked on."""
+        client = await get_client()
+        div = await client.division(division)
+        rows = await client.list(
+            "purchaseentry/PurchaseEntries",
+            select=["Supplier", "SupplierName", *ENTRY_FIELDS, "PaymentConditionDescription"],
+            filters=[f"EntryID eq {odata.guid(entry_id)}"],
+            limit=1,
+            division=div,
+        )
+        if not rows:
+            raise ToolError(f"No purchase invoice {entry_id} in this division.")
+        lines = await client.list(
+            "purchaseentry/PurchaseEntryLines",
+            select=[
+                "LineNumber",
+                "GLAccountCode",
+                "GLAccountDescription",
+                "Description",
+                "Quantity",
+                "AmountDC",
+                "VATAmountDC",
+                "VATCode",
+                "CostCenter",
+                "ProjectDescription",
+            ],
+            filters=[f"EntryID eq {odata.guid(entry_id)}"],
+            orderby="LineNumber",
+            limit=500,
+            division=div,
+        )
+        return {**rows[0], "lines": lines}
+
+    @tool
     async def search_items(
         query: Annotated[str | None, Field(description="Part of the item code or description.")] = None,
         limit: Limit = 25,
@@ -309,6 +527,93 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
             division=division,
         )
 
+    async def _gl_accounts(client, division) -> list[dict]:
+        # The bulk endpoint returns the whole chart in a call or two, but can't filter on Description.
+        return await client.list("bulk/Financial/GLAccounts", select=GL_ACCOUNT_FIELDS, limit=10_000, division=division)
+
+    @tool
+    async def search_gl_accounts(
+        query: Annotated[str | None, Field(description="Part of the GL account code or description.")] = None,
+        limit: Limit = 100,
+        division: Division = None,
+    ) -> list[dict]:
+        """The chart of accounts (general ledger accounts), by code. BalanceType B is the balance
+        sheet and W profit and loss; TypeDescription says what an account is for, such as Bank."""
+        client = await get_client()
+        accounts = await _gl_accounts(client, division)
+        if query:
+            q = query.lower()
+            accounts = [a for a in accounts if q in (a["Code"] or "").lower() or q in (a["Description"] or "").lower()]
+        return sorted(accounts, key=lambda a: a["Code"] or "")[:limit]
+
+    @tool
+    async def search_transactions(
+        gl_account_code: Annotated[
+            str | None, Field(description="Only lines on this GL account code, such as one from profit_and_loss.")
+        ] = None,
+        account_id: Annotated[str | None, Field(description="Only lines for this customer or supplier (GUID).")] = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        limit: Limit = 100,
+        division: Division = None,
+    ) -> dict:
+        """General ledger transaction lines, newest first. The total and count cover every matching
+        line, not only the ones returned, so they can be checked against profit_and_loss. AmountDC is
+        debit-positive. If `complete` is false there were too many lines to read; narrow the filters."""
+        filters = _date_range("Date", date_from, date_to)
+        if account_id:
+            filters.append(f"Account eq {odata.guid(account_id)}")
+        client = await get_client()
+        div = await client.division(division)
+        if gl_account_code:
+            code = gl_account_code.strip()
+            ids = {a["Code"]: a["ID"] for a in await _gl_accounts(client, div)}
+            if code not in ids:
+                raise ToolError(f"No GL account {code} in this division; see search_gl_accounts.")
+            # By ID, because the docs don't say whether GLAccountCode is space-padded like account codes.
+            filters.append(f"GLAccount eq {odata.guid(ids[code])}")
+        # The bulk endpoint isn't documented to sort, so read every match and sort here.
+        rows = await client.list(
+            "bulk/Financial/TransactionLines",
+            select=TRANSACTION_FIELDS,
+            filters=filters,
+            limit=MAX_TRANSACTION_LINES,
+            division=div,
+        )
+        rows.sort(key=lambda row: row["Date"] or "", reverse=True)
+        return {
+            "total_amount_dc": round(sum(row["AmountDC"] or 0 for row in rows), 2),
+            "line_count": len(rows),
+            "complete": len(rows) < MAX_TRANSACTION_LINES,
+            "lines": rows[:limit],
+        }
+
+    @tool
+    async def search_bank_transactions(
+        query: Annotated[str | None, Field(description="Part of the line description.")] = None,
+        account_id: Annotated[str | None, Field(description="Only lines for this customer or supplier (GUID).")] = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        limit: Limit = 25,
+        division: Division = None,
+    ) -> list[dict]:
+        """Bank statement lines from every bank account, newest first. AmountDC is positive for
+        money in and negative for money out; GLAccountCode is what the line was booked against."""
+        filters = _date_range("Date", date_from, date_to)
+        if query:
+            filters.append(f"substringof({odata.string(query)}, Description) eq true")
+        if account_id:
+            filters.append(f"Account eq {odata.guid(account_id)}")
+        client = await get_client()
+        return await client.list(
+            "financialtransaction/BankEntryLines",
+            select=BANK_LINE_FIELDS,
+            filters=filters,
+            orderby="Date desc",
+            limit=limit,
+            division=division,
+        )
+
     @tool
     async def profit_and_loss(
         year: Annotated[int, Field(ge=1990, le=2100, description="Financial year.")],
@@ -316,8 +621,9 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
         period_to: Annotated[int, Field(ge=1, le=12)] = 12,
         division: Division = None,
     ) -> dict:
-        """Profit and loss per general ledger account over a range of periods. Exact amounts are
-        debit-positive, so revenue shows negative; `result` flips that (positive = profit)."""
+        """Profit and loss per general ledger account over a range of financial periods (see
+        financial_periods). Exact amounts are debit-positive, so revenue shows negative; `result`
+        flips that (positive = profit)."""
         if period_from > period_to:
             raise ToolError("period_from must not be after period_to.")
         client = await get_client()
@@ -349,3 +655,75 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
             "result": round(-sum(a["amount"] for a in lines), 2),
             "accounts": lines,
         }
+
+    @tool
+    async def revenue_by_period(
+        year: Annotated[int, Field(ge=1990, le=2100, description="Financial year.")],
+        division: Division = None,
+    ) -> dict:
+        """Revenue per financial period of one year, from every revenue GL account, in one call.
+        Call it for two years to compare them."""
+        client = await get_client()
+        rows = await client.list(
+            "read/financial/RevenueListByYear",
+            select=["Period", "Amount"],
+            params={"year": str(year)},
+            limit=100,
+            division=division,
+        )
+        periods = sorted(
+            ({"period": row["Period"], "amount": round(row["Amount"] or 0, 2)} for row in rows),
+            key=lambda p: p["period"],
+        )
+        return {"year": year, "total": round(sum(p["amount"] for p in periods), 2), "periods": periods}
+
+    @tool
+    async def financial_periods(
+        year: Annotated[int | None, Field(ge=1990, le=2100, description="Only this financial year.")] = None,
+        division: Division = None,
+    ) -> list[dict]:
+        """Start and end date of each financial period. A financial year can differ from the calendar
+        year, and periods can be quarters, so use this to turn dates into the year and periods that
+        profit_and_loss and revenue_by_period take."""
+        client = await get_client()
+        return await client.list(
+            "financial/FinancialPeriods",
+            select=["FinYear", "FinPeriod", "StartDate", "EndDate"],
+            filters=[f"FinYear eq {year}"] if year is not None else [],
+            orderby="FinYear,FinPeriod",
+            limit=1000,
+            division=division,
+        )
+
+    @tool
+    async def tax_returns(
+        year: Annotated[int | None, Field(ge=1990, le=2100, description="Only returns for this year.")] = None,
+        division: Division = None,
+    ) -> list[dict]:
+        """VAT returns, EC sales lists and other tax returns with their period, due date, amount and
+        status, latest due date first. DocumentViewUrl opens the return in Exact."""
+        client = await get_client()
+        rows = await client.list(
+            "read/financial/Returns",
+            select=[
+                "Type",
+                "Description",
+                "Year",
+                "Period",
+                "PeriodDescription",
+                "Frequency",
+                "DueDate",
+                "Amount",
+                "Currency",
+                "Status",
+                "DocumentViewUrl",
+            ],
+            filters=[f"Year eq {year}"] if year is not None else [],
+            orderby="DueDate desc",
+            limit=500,
+            division=division,
+        )
+        for row in rows:
+            row["TypeDescription"] = RETURN_TYPES.get(row["Type"], str(row["Type"]))
+            row["StatusDescription"] = RETURN_STATUS.get(row["Status"], str(row["Status"]))
+        return rows

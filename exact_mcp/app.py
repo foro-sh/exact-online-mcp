@@ -7,11 +7,12 @@ from .config import load_settings
 from .tokens import BrokerTokens
 
 INSTRUCTIONS = """\
-Read-only access to one Exact Online connection: customers and suppliers, open receivables and
-payables, sales invoices and orders, items, and profit and loss. Every tool takes an optional
-`division` (an Exact administration); call list_divisions first when the user has more than one.
-Exact allows roughly 60 API calls a minute per company, so prefer a narrow filter over paging
-through everything."""
+Read-only access to one Exact Online connection: customers and suppliers, sales and purchase
+invoices, open receivables and payables, general ledger and bank transactions, profit and loss,
+revenue, VAT returns, sales orders, and items. Every tool takes an optional `division` (an Exact
+administration); call list_divisions first when the user has more than one, and
+financial_overview for a first look at how one is doing. Exact allows roughly 60 API calls a
+minute per company, so prefer a narrow filter over paging through everything."""
 
 
 class Connection:
