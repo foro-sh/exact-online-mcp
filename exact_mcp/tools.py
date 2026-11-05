@@ -1,7 +1,7 @@
 import functools
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
-from datetime import date
+from datetime import date, timedelta
 from typing import Annotated, Literal
 
 from fastmcp import FastMCP
@@ -155,6 +155,8 @@ BANK_LINE_FIELDS = [
 ]
 # Bulk endpoints return 1,000 lines a call, so this is at most 10 calls.
 MAX_TRANSACTION_LINES = 10_000
+# GL account types that hold money: cash, bank, credit card and payment services.
+CASH_TYPES = {10, 12, 14, 16}
 
 # Every failure a caller can act on, surfaced as the tool's error text rather than masked.
 _USER_ERRORS = (ConfigError, NotConnectedError, TokenRefreshError, ExactError, ValueError)
@@ -176,6 +178,84 @@ def _totals(rows: list[dict], amount: str, currency: str) -> dict[str, float]:
     return {cur: round(total, 2) for cur, total in totals.items()}
 
 
+async def _gl_accounts(client: ExactClient, division: int | None) -> list[dict]:
+    # The bulk endpoint returns the whole chart in a call or two, but can't filter on Description.
+    return await client.list("bulk/Financial/GLAccounts", select=GL_ACCOUNT_FIELDS, limit=10_000, division=division)
+
+
+async def _gl_totals(client, division, year, period_from, period_to, balance_type, filters=()) -> dict[str, dict]:
+    """ReportingBalance summed per GL account code over a range of periods."""
+    rows = await client.list(
+        "financial/ReportingBalance",
+        select=["GLAccountCode", "GLAccountDescription", "Amount"],
+        filters=[
+            f"ReportingYear eq {year}",
+            f"ReportingPeriod ge {period_from}",
+            f"ReportingPeriod le {period_to}",
+            f"BalanceType eq '{balance_type}'",
+            *filters,
+        ],
+        limit=10_000,
+        division=division,
+    )
+    accounts: dict[str, dict] = {}
+    for row in rows:
+        entry = accounts.setdefault(
+            row["GLAccountCode"],
+            {"code": row["GLAccountCode"], "description": row["GLAccountDescription"], "amount": 0.0},
+        )
+        entry["amount"] += row["Amount"] or 0
+    return accounts
+
+
+async def _recent_periods(client: ExactClient, division: int | None) -> list[dict]:
+    # Enough years to place today and find the previous year's last period, even when the
+    # financial year doesn't follow the calendar.
+    return await client.list(
+        "financial/FinancialPeriods",
+        select=["FinYear", "FinPeriod", "StartDate", "EndDate"],
+        filters=[f"FinYear ge {date.today().year - 2}"],
+        limit=1000,
+        division=division,
+    )
+
+
+def _period_on(periods: list[dict], day: date) -> tuple[int, int]:
+    for period in periods:
+        if period["StartDate"][:10] <= day.isoformat() <= period["EndDate"][:10]:
+            return period["FinYear"], period["FinPeriod"]
+    raise ToolError(f"No financial period in Exact covers {day}; check the division's financial years.")
+
+
+async def _balances(client, division, which, year, period, filters=()) -> list[dict]:
+    """Balance-sheet accounts at the end of `period`: Exact's opening balance for the year
+    (`which` is CurrentYear or PreviousYear, the only two it has) plus the movements since."""
+    opening = await client.list(
+        f"openingbalance/{which}/AfterEntry",
+        select=["GLAccountCode", "GLAccountDescription", "Amount"],
+        filters=filters,
+        limit=10_000,
+        division=division,
+    )
+    # Opening-balance entries (type 10) are already in the opening balance.
+    movements = await _gl_totals(client, division, year, 1, period, "B", [*filters, "Type ne 10"])
+    accounts: dict[str, dict] = {}
+
+    def account(code, description):
+        return accounts.setdefault(code, {"code": code, "description": description, "opening": 0.0, "movements": 0.0})
+
+    for row in opening:
+        account(row["GLAccountCode"], row["GLAccountDescription"])["opening"] += row["Amount"] or 0
+    for code, moved in movements.items():
+        account(code, moved["description"])["movements"] += moved["amount"]
+    lines = sorted(accounts.values(), key=lambda a: a["code"])
+    for line in lines:
+        line["closing"] = round(line["opening"] + line["movements"], 2)
+        line["opening"] = round(line["opening"], 2)
+        line["movements"] = round(line["movements"], 2)
+    return lines
+
+
 def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> None:
     def tool(fn):
         @functools.wraps(fn)
@@ -190,13 +270,17 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
     @tool
     async def list_divisions() -> dict:
         """The Exact Online administrations (divisions) this connection can read, and which
-        one the other tools use when no division is given."""
+        one the other tools use when no division is given. Status 1 is active, 0 inactive and
+        2 archived; a BlockingStatus other than 0 means Exact is busy with the division, for
+        example with a backup or a conversion."""
         client = await get_client()
         me = await client.me()
         return {
             "user": me["FullName"],
             "default_division": await client.division(),
-            "divisions": await client.list("system/Divisions", select=["Code", "Description"], limit=1000),
+            "divisions": await client.list(
+                "system/Divisions", select=["Code", "Description", "Status", "BlockingStatus"], limit=1000
+            ),
         }
 
     @tool
@@ -338,6 +422,71 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
         return await _aging("read/financial/AgingPayablesList", limit, division)
 
     @tool
+    async def customer_payment_behaviour(
+        account_id: Annotated[str | None, Field(description="Only this customer (GUID).")] = None,
+        invoice_date_from: Annotated[
+            date | None, Field(description="Invoices from this date. Default: a year ago.")
+        ] = None,
+        limit: Limit = 25,
+        division: Division = None,
+    ) -> dict:
+        """How fast customers pay, slowest first: per customer, the invoices since
+        invoice_date_from that are paid in full, the average days from invoice to last payment
+        and past the due date, and the share paid late."""
+        since = invoice_date_from or date.today() - timedelta(days=365)
+        # Status 50 is matched: settled against a payment or another open item.
+        filters = [f"InvoiceDate ge {odata.datetime_literal(since)}", "Status eq 50"]
+        if account_id:
+            filters.append(f"Account eq {odata.guid(account_id)}")
+        client = await get_client()
+        rows = await client.list(
+            "bulk/Cashflow/Receivables",
+            select=[
+                "Account",
+                "AccountCode",
+                "AccountName",
+                "InvoiceDate",
+                "DueDate",
+                "LastPaymentDate",
+                "IsFullyPaid",
+                "TransactionIsReversal",
+            ],
+            filters=filters,
+            limit=MAX_TRANSACTION_LINES,
+            division=division,
+        )
+        customers: dict[str, dict] = {}
+        for row in rows:
+            if not row["IsFullyPaid"] or row["TransactionIsReversal"] or not row["LastPaymentDate"]:
+                continue
+            invoiced = date.fromisoformat(row["InvoiceDate"][:10])
+            paid = date.fromisoformat(row["LastPaymentDate"][:10])
+            due = date.fromisoformat(row["DueDate"][:10]) if row["DueDate"] else invoiced
+            customer = customers.setdefault(
+                row["Account"],
+                {"account_id": row["Account"], "code": row["AccountCode"], "name": row["AccountName"], "days": []},
+            )
+            customer["days"].append(((paid - invoiced).days, (paid - due).days))
+        summary = []
+        for customer in customers.values():
+            days = customer.pop("days")
+            summary.append(
+                {
+                    **customer,
+                    "paid_invoices": len(days),
+                    "average_days_to_pay": round(sum(to_pay for to_pay, _ in days) / len(days), 1),
+                    "average_days_late": round(sum(late for _, late in days) / len(days), 1),
+                    "paid_late_share": round(sum(1 for _, late in days if late > 0) / len(days), 2),
+                }
+            )
+        summary.sort(key=lambda c: c["average_days_late"], reverse=True)
+        return {
+            "since": since.isoformat(),
+            "complete": len(rows) < MAX_TRANSACTION_LINES,
+            "customers": summary[:limit],
+        }
+
+    @tool
     async def search_sales_invoices(
         account_id: Annotated[str | None, Field(description="Only invoices to this customer (GUID).")] = None,
         status: Literal["draft", "open", "processed"] | None = None,
@@ -439,7 +588,8 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
         limit: Limit = 25,
         division: Division = None,
     ) -> list[dict]:
-        """Sales orders, newest first."""
+        """Sales orders, newest first. Only divisions with Exact's Wholesale & Distribution or
+        Manufacturing package have them."""
         filters = _date_range("OrderDate", order_date_from, order_date_to)
         if account_id:
             filters.append(f"OrderedBy eq {odata.guid(account_id)}")
@@ -526,10 +676,6 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
             limit=limit,
             division=division,
         )
-
-    async def _gl_accounts(client, division) -> list[dict]:
-        # The bulk endpoint returns the whole chart in a call or two, but can't filter on Description.
-        return await client.list("bulk/Financial/GLAccounts", select=GL_ACCOUNT_FIELDS, limit=10_000, division=division)
 
     @tool
     async def search_gl_accounts(
@@ -627,25 +773,7 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
         if period_from > period_to:
             raise ToolError("period_from must not be after period_to.")
         client = await get_client()
-        rows = await client.list(
-            "financial/ReportingBalance",
-            select=["GLAccountCode", "GLAccountDescription", "Amount"],
-            filters=[
-                f"ReportingYear eq {year}",
-                f"ReportingPeriod ge {period_from}",
-                f"ReportingPeriod le {period_to}",
-                "BalanceType eq 'W'",
-            ],
-            limit=10_000,
-            division=division,
-        )
-        accounts: dict[str, dict] = {}
-        for row in rows:
-            entry = accounts.setdefault(
-                row["GLAccountCode"],
-                {"code": row["GLAccountCode"], "description": row["GLAccountDescription"], "amount": 0.0},
-            )
-            entry["amount"] += row["Amount"] or 0
+        accounts = await _gl_totals(client, division, year, period_from, period_to, "W")
         lines = sorted(accounts.values(), key=lambda a: a["code"])
         for line in lines:
             line["amount"] = round(line["amount"], 2)
@@ -653,6 +781,140 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
             "year": year,
             "periods": [period_from, period_to],
             "result": round(-sum(a["amount"] for a in lines), 2),
+            "accounts": lines,
+        }
+
+    @tool
+    async def balance_sheet(
+        year: Annotated[
+            int | None,
+            Field(ge=1990, le=2100, description="Financial year, the current or the previous one. Default: current."),
+        ] = None,
+        period: Annotated[
+            int | None,
+            Field(ge=1, le=12, description="Balances at the end of this period. Default: the current or last one."),
+        ] = None,
+        division: Division = None,
+    ) -> dict:
+        """Balance-sheet accounts at the end of a financial period: Exact's opening balance for the
+        year plus the movements since. Amounts are debit-positive, so assets show positive and
+        liabilities and equity negative. Exact only has opening balances for the current and the
+        previous financial year. During a year the accounts don't net to zero: `total` is the
+        result not yet booked to equity (positive = profit)."""
+        client = await get_client()
+        div = await client.division(division)
+        periods = await _recent_periods(client, div)
+        current_year, current_period = _period_on(periods, date.today())
+        year = current_year if year is None else year
+        if year == current_year:
+            which, last = "CurrentYear", current_period
+        elif year == current_year - 1:
+            which = "PreviousYear"
+            last = max((p["FinPeriod"] for p in periods if p["FinYear"] == year), default=None)
+            if last is None:
+                raise ToolError(f"Financial year {year} has no periods in this division.")
+        else:
+            raise ToolError(
+                f"Exact only has opening balances for financial years {current_year - 1} and {current_year}."
+            )
+        period = last if period is None else period
+        lines = await _balances(client, div, which, year, period)
+        return {
+            "year": year,
+            "period": period,
+            "total": round(sum(line["closing"] for line in lines), 2),
+            "accounts": lines,
+        }
+
+    @tool
+    async def cash_position(division: Division = None) -> dict:
+        """The booked balance of every cash, bank, credit card and payment provider account up to
+        the current financial period, with the total. Debit-positive, so money held is positive."""
+        client = await get_client()
+        div = await client.division(division)
+        cash = [account for account in await _gl_accounts(client, div) if account["Type"] in CASH_TYPES]
+        if not cash:
+            return {"total": 0.0, "accounts": []}
+        year, period = _period_on(await _recent_periods(client, div), date.today())
+        ids = " or ".join(f"GLAccount eq {odata.guid(account['ID'])}" for account in cash)
+        lines = await _balances(client, div, "CurrentYear", year, period, [f"({ids})"])
+        return {
+            "year": year,
+            "period": period,
+            "total": round(sum(line["closing"] for line in lines), 2),
+            "accounts": lines,
+        }
+
+    @tool
+    async def budget_vs_actual(
+        year: Annotated[int, Field(ge=1990, le=2100, description="Financial year.")],
+        period_from: Annotated[int, Field(ge=1, le=12)] = 1,
+        period_to: Annotated[int, Field(ge=1, le=12)] = 12,
+        scenario: Annotated[
+            str | None, Field(description="Budget scenario code. Omit when the year has only one.")
+        ] = None,
+        division: Division = None,
+    ) -> dict:
+        """Budget against actual per profit-and-loss GL account over a range of financial periods.
+        Both are debit-positive like profit_and_loss, and variance is actual minus budget; the two
+        results flip the sign (positive = profit)."""
+        if period_from > period_to:
+            raise ToolError("period_from must not be after period_to.")
+        client = await get_client()
+        div = await client.division(division)
+        rows = await client.list(
+            "budget/Budgets",
+            select=[
+                "BudgetScenarioCode",
+                "BudgetScenarioDescription",
+                "GLAccountCode",
+                "GLAccountDescription",
+                "AmountDC",
+            ],
+            filters=[
+                f"ReportingYear eq {year}",
+                f"ReportingPeriod ge {period_from}",
+                f"ReportingPeriod le {period_to}",
+            ],
+            limit=10_000,
+            division=div,
+        )
+        scenarios = {row["BudgetScenarioCode"]: row["BudgetScenarioDescription"] for row in rows}
+        if not scenarios:
+            raise ToolError(f"No budget for {year} in this division.")
+        if scenario is None and len(scenarios) > 1:
+            raise ToolError(f"{year} has more than one budget scenario; pick one of {', '.join(sorted(scenarios))}.")
+        scenario = next(iter(scenarios)) if scenario is None else scenario.strip()
+        if scenario not in scenarios:
+            raise ToolError(f"No budget scenario {scenario} for {year}; it has {', '.join(sorted(scenarios))}.")
+        budget: dict[str, dict] = {}
+        for row in rows:
+            if row["BudgetScenarioCode"] == scenario:
+                entry = budget.setdefault(
+                    row["GLAccountCode"], {"description": row["GLAccountDescription"], "amount": 0.0}
+                )
+                entry["amount"] += row["AmountDC"] or 0
+        actual = await _gl_totals(client, div, year, period_from, period_to, "W")
+        lines = []
+        for code in sorted(budget.keys() | actual.keys()):
+            budgeted = round(budget[code]["amount"], 2) if code in budget else 0.0
+            booked = round(actual[code]["amount"], 2) if code in actual else 0.0
+            description = (actual.get(code) or budget[code])["description"]
+            lines.append(
+                {
+                    "code": code,
+                    "description": description,
+                    "budget": budgeted,
+                    "actual": booked,
+                    "variance": round(booked - budgeted, 2),
+                }
+            )
+        return {
+            "year": year,
+            "periods": [period_from, period_to],
+            "scenario": {"code": scenario, "description": scenarios[scenario]},
+            "budgeted_result": round(-sum(line["budget"] for line in lines), 2),
+            "actual_result": round(-sum(line["actual"] for line in lines), 2),
             "accounts": lines,
         }
 
