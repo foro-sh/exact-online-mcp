@@ -1,4 +1,3 @@
-import base64
 from datetime import date
 
 import pytest
@@ -39,12 +38,12 @@ def test_settings_defaults_to_nl_and_current_division():
     settings = load_settings(ENV)
     assert settings.base_url == "https://start.exactonline.nl"
     assert settings.division is None
-    assert settings.token_key == "nl:client-id"
+    assert settings.broker_url == "http://worker:3005"
 
 
 def test_missing_secrets_are_named():
-    with pytest.raises(ConfigError, match="EXACT_CLIENT_SECRET, TOKEN_STORE_KEY"):
-        load_settings({"EXACT_CLIENT_ID": "x", "TOKEN_STORE_URL": "y"})
+    with pytest.raises(ConfigError, match="inside a foro deploy. Missing: FORO_UPSTREAM_BROKER_TOKEN"):
+        load_settings({"FORO_UPSTREAM_BROKER_URL": "http://worker:3005"})
 
 
 @pytest.mark.parametrize(
@@ -52,8 +51,6 @@ def test_missing_secrets_are_named():
     [
         ({"EXACT_REGION": "us-east"}, "EXACT_REGION"),
         ({"EXACT_DIVISION": "abc"}, "EXACT_DIVISION"),
-        ({"TOKEN_STORE_KEY": "not base64!"}, "base64"),
-        ({"TOKEN_STORE_KEY": base64.b64encode(b"short").decode()}, "32 bytes"),
     ],
 )
 def test_invalid_settings_are_rejected(override, message):

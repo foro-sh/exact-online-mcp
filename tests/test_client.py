@@ -3,7 +3,7 @@ import pytest
 
 from exact_mcp.client import ExactError, RateLimitedError
 
-from .conftest import NOW, odata
+from .conftest import BROKER, NOW, broker_token, odata
 
 BASE = "https://start.exactonline.nl/api/v1"
 
@@ -111,15 +111,16 @@ async def test_minutely_limit_still_hit_after_waiting_says_so(client, exact, sle
 
 
 async def test_unauthorised_reloads_the_token_and_retries_once(client, exact):
-    responses = iter([httpx.Response(401), httpx.Response(200, json=odata([]))])
+    responses = iter([httpx.Response(401), broker_token("access-2"), httpx.Response(200, json=odata([]))])
     exact.handler = lambda r: next(responses)
 
     assert await client.list("crm/Accounts", select=["ID"], limit=1) == []
-    assert len(exact.requests) == 2
+    assert str(exact.requests[1].url) == f"{BROKER}/grants/exact"
+    assert exact.requests[2].headers["Authorization"] == "Bearer access-2"
 
 
 async def test_persistent_unauthorised_raises(client, exact):
-    exact.handler = lambda r: httpx.Response(401, text="Unauthorized")
+    exact.handler = lambda r: broker_token() if r.url.host == "worker" else httpx.Response(401, text="Unauthorized")
     with pytest.raises(ExactError, match="401"):
         await client.list("crm/Accounts", select=["ID"], limit=1)
 

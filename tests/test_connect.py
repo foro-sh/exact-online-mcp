@@ -5,8 +5,8 @@ import pytest
 from exact_mcp.connect import authorize_url, code_from
 
 
-def test_authorize_url_targets_the_region_host(settings):
-    url = urlparse(authorize_url(settings, "https://example.com/callback"))
+def test_authorize_url_targets_the_region_host():
+    url = urlparse(authorize_url("https://start.exactonline.nl", "client-id", "https://example.com/callback"))
     assert (url.netloc, url.path) == ("start.exactonline.nl", "/api/oauth2/auth")
     assert parse_qs(url.query) == {
         "client_id": ["client-id"],
