@@ -108,6 +108,7 @@ ENTRY_FIELDS = [
     "StatusDescription",
     "Type",
     "TypeDescription",
+    "Document",
 ]
 AGING_FIELDS = [
     "AccountId",
@@ -256,7 +257,10 @@ async def _balances(client, division, which, year, period, filters=()) -> list[d
     return lines
 
 
-def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> None:
+def read_only_tools(mcp: FastMCP, toolset: str) -> Callable:
+    """A decorator that registers a read-only tool in `toolset`, the tag EXACT_TOOLSETS switches
+    tools on by."""
+
     def tool(fn):
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
@@ -265,7 +269,14 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
             except _USER_ERRORS as err:
                 raise ToolError(str(err)) from err
 
-        return mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))(wrapper)
+        annotations = ToolAnnotations(read_only_hint=True, open_world_hint=True)
+        return mcp.tool(tags={toolset}, annotations=annotations)(wrapper)
+
+    return tool
+
+
+def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> None:
+    tool = read_only_tools(mcp, "core")
 
     @tool
     async def list_divisions() -> dict:

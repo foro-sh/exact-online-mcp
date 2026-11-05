@@ -15,6 +15,10 @@ REGION_HOSTS = {
 # The upstream grant's name on the foro project, which the broker looks the tokens up by.
 GRANT_NAME = "exact"
 
+# Groups of tools beyond the core ones, switched on with EXACT_TOOLSETS. Most need a module that
+# only some Exact packages have.
+TOOLSETS = ("orders", "projects", "crm", "subscriptions", "documents", "changes")
+
 # foro injects both into every container it deploys.
 REQUIRED = ("FORO_UPSTREAM_BROKER_URL", "FORO_UPSTREAM_BROKER_TOKEN")
 
@@ -32,6 +36,15 @@ def region_from(env: dict[str, str]) -> str:
     if region not in REGION_HOSTS:
         raise ConfigError(f"EXACT_REGION must be one of {', '.join(REGION_HOSTS)}, got {region!r}")
     return region
+
+
+def toolsets_from(env: dict[str, str]) -> set[str]:
+    names = {name.strip().lower() for name in env.get("EXACT_TOOLSETS", "").split(",") if name.strip()}
+    if "all" in names:
+        return set(TOOLSETS)
+    if unknown := names - set(TOOLSETS):
+        raise ConfigError(f"EXACT_TOOLSETS can name {', '.join(TOOLSETS)} or all, got {', '.join(sorted(unknown))}")
+    return names
 
 
 @dataclass(frozen=True)

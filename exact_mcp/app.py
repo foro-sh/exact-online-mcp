@@ -1,9 +1,11 @@
+import os
+
 import httpx
 from fastmcp import FastMCP
 
-from . import tools
+from . import tools, toolsets
 from .client import ExactClient
-from .config import load_settings
+from .config import load_settings, toolsets_from
 from .tokens import BrokerTokens
 
 INSTRUCTIONS = """\
@@ -32,5 +34,9 @@ class Connection:
 
 def create_server() -> FastMCP:
     mcp = FastMCP("exact-online", instructions=INSTRUCTIONS)
-    tools.register(mcp, Connection().client)
+    get_client = Connection().client
+    tools.register(mcp, get_client)
+    toolsets.register(mcp, get_client)
+    # The agent sees the core tools, and only the toolsets EXACT_TOOLSETS names.
+    mcp.enable(tags={"core", *toolsets_from(dict(os.environ))}, only=True)
     return mcp

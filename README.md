@@ -35,6 +35,24 @@ to change anything in the books.
 Every tool takes an optional `division`. Without it, the server uses `EXACT_DIVISION`, or else
 the user's current division in Exact.
 
+### Toolsets
+
+The tools above are always on. These groups stay off until `EXACT_TOOLSETS` on the project's Env
+tab names them, such as `orders,projects`, or `all`. Most need a module that only some Exact
+packages have.
+
+| Toolset | Tools | Needs |
+| --- | --- | --- |
+| `orders` | `get_sales_order`, `search_purchase_orders`, `stock_levels` | Wholesale & Distribution or Manufacturing; stock from Plus up |
+| `projects` | `search_projects`, `project_hours`, `project_result`, `upcoming_project_billing` | The project module |
+| `crm` | `search_quotations`, `search_opportunities`, `list_contacts` | |
+| `subscriptions` | `subscription_mrr` | The subscription module |
+| `documents` | `search_documents`, `get_document` | |
+| `changes` | `recent_changes` | |
+
+`list_contacts` only reads a contact's name, job title and business email and phone.
+`project_hours` adds hours up per project and hour type, not per person.
+
 ## How the connection works
 
 Exact Online uses OAuth 2 with a 10-minute access token, and it issues a new refresh token on
@@ -99,6 +117,9 @@ Until the grant exists, the server still deploys, and every tool says how to con
   `ReportingBalance`, which has no bulk endpoint, so a large administration takes several calls.
 - `get_sales_invoice` and `get_purchase_invoice` make two calls, one of them for the lines.
 - `financial_overview` makes three calls.
+- `project_hours` and `subscription_mrr` read endpoints without a bulk version, up to 2,000 rows
+  each. `stock_levels` checks reorder points on up to 1,000 rows.
+- `get_document` returns at most 10 MB of files, which go into the agent's context.
 
 ## Development
 
@@ -128,6 +149,8 @@ Checked against [Exact's REST reference](https://start.exactonline.nl/docs/HlpRe
 - Opening balances only exist for the current and the previous financial year.
 - Bulk `Cashflow/Receivables` can filter on `Status` but not on `IsFullyPaid`, so
   `customer_payment_behaviour` checks that in the server.
+- The purchase order, quotation, opportunity, hour and invoice term status codes, and the entity
+  types of `sync/Deleted`.
 
 Consistent across third-party sources, but not in Exact's own docs:
 
@@ -154,6 +177,12 @@ Still to check on a test company:
   the movements, so they aren't counted twice.
 - `customer_payment_behaviour` counts credit notes like invoices: `cashflow/Receivables` has no
   type to tell them apart.
+- That a subscription line's `AmountDC` is its amount per invoice period, as `subscription_mrr`
+  assumes.
+- That `DocumentAttachments` returns the Base64 `Attachment` in a list request, and that
+  `FileSize` is in bytes.
+- That `ItemWarehouses`, `Projects`, `TimeTransactions`, `Quotations`, `Opportunities`,
+  `Subscriptions` and `Documents` filter on the fields the tools use. Their pages show no limits.
 - Whether bulk endpoints take `$top` and `$orderby`. The server never sends them, and sorts
   transaction lines itself.
 - Whether `$expand` of invoice lines works, as some third-party clients use it. It would make
