@@ -131,3 +131,36 @@ async def test_exact_error_message_is_surfaced(client, exact):
     )
     with pytest.raises(ExactError, match="Invalid field: Nope"):
         await client.list("crm/Accounts", select=["Nope"], limit=1)
+
+
+async def test_forbidden_names_the_endpoint_and_the_likely_causes(client, exact):
+    exact.handler = lambda r: httpx.Response(403, text="Forbidden")
+
+    with pytest.raises(ExactError, match=r"403: Forbidden \(/api/v1/123/purchaseentry/PurchaseEntries\)\. .*package"):
+        await client.list("purchaseentry/PurchaseEntries", select=["EntryID"], limit=1)
+
+
+async def test_bulk_endpoints_never_get_top(client, exact):
+    exact.handler = lambda r: httpx.Response(200, json=odata([{"ID": "x"}]))
+
+    await client.list("bulk/Financial/GLAccounts", select=["ID"], limit=5)
+
+    assert "$top" not in exact.requests[0].url.params
+
+
+async def test_params_go_with_the_query(client, exact):
+    exact.handler = lambda r: httpx.Response(200, json=odata([]))
+
+    await client.list("read/financial/RevenueListByYear", select=["Period"], params={"year": "2026"}, limit=100)
+
+    params = exact.requests[0].url.params
+    assert params["year"] == "2026"
+    assert params["$select"] == "Period"
+
+
+async def test_a_bare_list_or_a_single_record_reads_as_rows(client, exact):
+    responses = iter([httpx.Response(200, json={"d": [{"ID": "a"}]}), httpx.Response(200, json={"d": {"ID": "b"}})])
+    exact.handler = lambda r: next(responses)
+
+    assert await client.list("read/financial/AgingOverview", select=["ID"], limit=10) == [{"ID": "a"}]
+    assert await client.list("read/financial/ProfitLossOverview", select=["ID"], limit=1) == [{"ID": "b"}]
