@@ -29,6 +29,18 @@ def _error_message(response: httpx.Response) -> str:
         return response.text[:300] or response.reason_phrase
 
 
+def _http_error(response: httpx.Response) -> ExactError:
+    message = f"Exact Online returned {response.status_code}: {_error_message(response)}"
+    if response.status_code == 403:
+        # A valid token is still refused for parts of Exact the company's package, the app's scopes
+        # or the user's rights don't cover, so say which endpoint it was.
+        message += (
+            f" ({response.url.path}). This division's Exact package, the app's scopes or the user's rights"
+            " may not cover this part of Exact."
+        )
+    return ExactError(message)
+
+
 class ExactClient:
     def __init__(
         self,
@@ -46,11 +58,17 @@ class ExactClient:
         self._clock = clock
 
     async def me(self) -> dict:
-        data = await self._get(
+        response = await self._get(
             f"{self._base_url}/api/v1/current/Me",
             {"$select": "CurrentDivision,FullName,UserName"},
         )
-        return odata.clean(data["d"]["results"][0])
+        return odata.clean(response.json()["d"]["results"][0])
+
+    async def metadata(self, service: str, division: int | None = None) -> str:
+        """The `$metadata` document (EDMX) of a service such as `crm`, which describes its
+        resources and their properties."""
+        url = f"{self._base_url}/api/v1/{await self.division(division)}/{service}/$metadata"
+        return (await self._get(url, None, accept="application/xml")).text
 
     async def division(self, override: int | None = None) -> int:
         if override is not None:
@@ -68,35 +86,41 @@ class ExactClient:
         orderby: str | None = None,
         limit: int,
         division: int | None = None,
+        params: dict[str, str] | None = None,
     ) -> list[dict]:
         """Rows of `resource` (e.g. `crm/Accounts`), following Exact's `__next` links until
-        `limit` rows are collected or the collection ends."""
+        `limit` rows are collected or the collection ends. `params` are extra query parameters,
+        such as the `year` a `read/` function takes."""
         url = f"{self._base_url}/api/v1/{await self.division(division)}/{resource}"
-        params: dict[str, str] = {"$select": ",".join(select)}
+        params = {**(params or {}), "$select": ",".join(select)}
         if filters:
             params["$filter"] = " and ".join(filters)
         if orderby:
             params["$orderby"] = orderby
-        if limit <= PAGE_SIZE:
+        # Bulk endpoints page 1,000 rows, and their docs don't say they take $top.
+        if limit <= PAGE_SIZE and not resource.startswith("bulk/"):
             params["$top"] = str(limit)
 
         rows: list[dict] = []
         while url and len(rows) < limit:
-            data = (await self._get(url, params))["d"]
+            data = (await self._get(url, params)).json()["d"]
+            # Collections come as d.results; some read/ functions reportedly answer with a bare
+            # list or a single record.
+            if isinstance(data, list):
+                data = {"results": data}
+            elif "results" not in data:
+                data = {"results": [data]}
             rows.extend(odata.clean(row) for row in data["results"])
             # __next carries the query (and a skiptoken) itself.
             url, params = data.get("__next"), None
         return rows[:limit]
 
-    async def _get(self, url: str, params: dict[str, str] | None) -> dict:
+    async def _get(self, url: str, params: dict[str, str] | None, accept: str = "application/json") -> httpx.Response:
         for attempt in range(2):
             response = await self._http.get(
                 url,
                 params=params,
-                headers={
-                    "Authorization": f"Bearer {await self._tokens.access_token()}",
-                    "Accept": "application/json",
-                },
+                headers={"Authorization": f"Bearer {await self._tokens.access_token()}", "Accept": accept},
             )
             retry = attempt == 0
             if response.status_code == 401 and retry:
@@ -111,9 +135,9 @@ class ExactClient:
                     continue
                 raise RateLimitedError("Exact Online's per-minute API limit is still used up; try again in a minute.")
             if response.is_error:
-                raise ExactError(f"Exact Online returned {response.status_code}: {_error_message(response)}")
-            return response.json()
-        raise ExactError(f"Exact Online returned {response.status_code}: {_error_message(response)}")
+                raise _http_error(response)
+            return response
+        raise _http_error(response)
 
     def _minutely_wait(self, response: httpx.Response) -> float:
         # Exact's docs don't name the reset header, so without it wait out a whole window.

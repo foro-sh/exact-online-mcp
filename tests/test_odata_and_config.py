@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 
 from exact_mcp import odata
-from exact_mcp.config import ConfigError, load_settings
+from exact_mcp.config import TOOLSETS, ConfigError, load_settings, toolsets_from
 
 from .conftest import ENV
 
@@ -60,3 +60,42 @@ def test_invalid_settings_are_rejected(override, message):
 
 def test_uk_region_host():
     assert load_settings({**ENV, "EXACT_REGION": "UK"}).base_url == "https://start.exactonline.co.uk"
+
+
+def test_toolsets_are_off_by_default_and_all_switches_every_one_on():
+    assert toolsets_from({}) == set()
+    assert toolsets_from({"EXACT_TOOLSETS": " Orders, crm ,"}) == {"orders", "crm"}
+    assert toolsets_from({"EXACT_TOOLSETS": "all"}) == set(TOOLSETS)
+
+
+def test_an_unknown_toolset_is_named():
+    with pytest.raises(ConfigError, match="EXACT_TOOLSETS can name .* got payroll"):
+        toolsets_from({"EXACT_TOOLSETS": "orders,payroll"})
+
+
+EDMX = """<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="1.0" xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx">
+  <edmx:DataServices xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata">
+    <Schema Namespace="Exact.Web.Api.Models" xmlns="http://schemas.microsoft.com/ado/2008/09/edm">
+      <EntityType Name="Address">
+        <Key><PropertyRef Name="ID"/></Key>
+        <Property Name="ID" Type="Edm.Guid" Nullable="false"/>
+        <Property Name="City" Type="Edm.String"/>
+      </EntityType>
+      <EntityContainer Name="Container" m:IsDefaultEntityContainer="true">
+        <EntitySet Name="Addresses" EntityType="Exact.Web.Api.Models.Address"/>
+      </EntityContainer>
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>"""
+
+
+def test_entity_properties_reads_the_type_behind_an_entity_set():
+    assert odata.entity_properties(EDMX, "addresses") == [
+        {"name": "ID", "type": "Edm.Guid"},
+        {"name": "City", "type": "Edm.String"},
+    ]
+    with pytest.raises(ValueError, match="no Accounts; it has Addresses"):
+        odata.entity_properties(EDMX, "Accounts")
+    with pytest.raises(ValueError, match="isn't valid XML"):
+        odata.entity_properties("<nope", "Addresses")
