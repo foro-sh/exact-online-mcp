@@ -34,15 +34,13 @@ in an upstream grant on the foro project:
 - If a refresh is ever lost, foro marks the grant dead on the project's tabs, and every tool
   says to reconnect.
 
-A one-time `connect` command does the browser authorisation and prints the grant to add in the
-dashboard. From then on foro refreshes it.
+You connect it once from the foro dashboard, and from then on foro refreshes it.
 
 ## Setup
 
 **1. Register an Exact app.** In the [Exact App Center](https://apps.exactonline.com), under
-*Manage* → *Apps*, register an app for your region. Set a redirect URI; it only has to be a URL
-you can copy from the address bar, such as `https://localhost/callback`. Note the client ID and
-secret.
+*Manage* → *Apps*, register an app for your region with redirect URI
+`https://foro.sh/api/upstream-grants/callback`. Note the client ID and secret.
 
 **2. Add the secrets on foro.** In the project's Env tab:
 
@@ -52,22 +50,18 @@ secret.
 | `EXACT_REGION` | `nl` (default), `be`, `de`, `uk`, `fr`, `es` or `us` |
 | `EXACT_DIVISION` | Optional: the default division number |
 
-**3. Authorise once, locally.**
+**3. Connect.** Under *Upstream grants* on the same Env tab, add a grant and fill in:
 
-```sh
-uv sync
-export EXACT_CLIENT_ID=... EXACT_CLIENT_SECRET=... EXACT_REGION=nl
-export EXACT_REDIRECT_URI=https://localhost/callback
-uv run python -m exact_mcp.connect
-```
+| Field | Value (for `nl`; use your region's host) |
+| --- | --- |
+| Name | `exact` |
+| Authorization URL | `https://start.exactonline.nl/api/oauth2/auth` |
+| Token endpoint | `https://start.exactonline.nl/api/oauth2/token` |
+| Client id | From step 1 |
+| Client secret | `EXACT_CLIENT_SECRET` |
 
-Open the printed URL, approve access, and paste the address Exact redirects to. The command
-then waits about 10 minutes, until the first access token is nearly expired, because Exact
-refuses an earlier refresh. Leave it running.
-
-**4. Add the grant.** Under *Upstream grants* on the same Env tab, add the grant `connect`
-printed: name `exact`, the token endpoint, the client ID, `EXACT_CLIENT_SECRET` as the client
-secret, and the refresh token. Redeploy if you changed a secret in step 2.
+Click *Connect*, sign in to Exact and approve access. foro stores the grant and you're back on
+the Env tab. Redeploy if you changed a secret in step 2.
 
 Until the grant exists, the server still deploys, and every tool says how to connect it.
 
