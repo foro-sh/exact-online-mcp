@@ -49,9 +49,15 @@ packages have.
 | `subscriptions` | `subscription_mrr` | The subscription module |
 | `documents` | `search_documents`, `get_document` | |
 | `changes` | `recent_changes` | |
+| `query` | `describe_resource`, `query` | |
 
 `list_contacts` only reads a contact's name, job title and business email and phone.
 `project_hours` adds hours up per project and hour type, not per person.
+
+`query` reads any other Exact resource with OData's `$select`, `$filter` and `$orderby`, and
+`describe_resource` lists a resource's fields. Neither reads payroll, HR, user or mailbox
+resources, or a field that identifies a person, names a user or holds a file (see
+`exact_mcp/scope.py`).
 
 ## How the connection works
 
@@ -183,6 +189,8 @@ Still to check on a test company:
   `FileSize` is in bytes.
 - That `ItemWarehouses`, `Projects`, `TimeTransactions`, `Quotations`, `Opportunities`,
   `Subscriptions` and `Documents` filter on the fields the tools use. Their pages show no limits.
+- That every service answers `$metadata`, which Exact's knowledge base documents and
+  `describe_resource` needs, including `read/`, `bulk/` and `sync/` ones.
 - Whether bulk endpoints take `$top` and `$orderby`. The server never sends them, and sorts
   transaction lines itself.
 - Whether `$expand` of invoice lines works, as some third-party clients use it. It would make

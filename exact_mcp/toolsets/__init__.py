@@ -6,7 +6,7 @@ from fastmcp import FastMCP
 
 from ..client import ExactClient
 from ..tools import read_only_tools
-from . import changes, crm, documents, orders, projects, subscriptions
+from . import changes, crm, documents, orders, projects, query, subscriptions
 
 MODULES = {
     "orders": orders,
@@ -15,6 +15,7 @@ MODULES = {
     "subscriptions": subscriptions,
     "documents": documents,
     "changes": changes,
+    "query": query,
 }
 
 

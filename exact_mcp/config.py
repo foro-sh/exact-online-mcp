@@ -17,7 +17,7 @@ GRANT_NAME = "exact"
 
 # Groups of tools beyond the core ones, switched on with EXACT_TOOLSETS. Most need a module that
 # only some Exact packages have.
-TOOLSETS = ("orders", "projects", "crm", "subscriptions", "documents", "changes")
+TOOLSETS = ("orders", "projects", "crm", "subscriptions", "documents", "changes", "query")
 
 # foro injects both into every container it deploys.
 REQUIRED = ("FORO_UPSTREAM_BROKER_URL", "FORO_UPSTREAM_BROKER_TOKEN")

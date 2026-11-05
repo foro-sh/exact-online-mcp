@@ -164,3 +164,11 @@ async def test_a_bare_list_or_a_single_record_reads_as_rows(client, exact):
 
     assert await client.list("read/financial/AgingOverview", select=["ID"], limit=10) == [{"ID": "a"}]
     assert await client.list("read/financial/ProfitLossOverview", select=["ID"], limit=1) == [{"ID": "b"}]
+
+
+async def test_metadata_asks_for_the_services_edmx(client, exact):
+    exact.handler = lambda r: httpx.Response(200, text="<edmx:Edmx/>")
+
+    assert await client.metadata("read/financial") == "<edmx:Edmx/>"
+    assert exact.requests[0].url.path == "/api/v1/123/read/financial/$metadata"
+    assert exact.requests[0].headers["Accept"] == "application/xml"

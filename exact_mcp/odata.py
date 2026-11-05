@@ -1,6 +1,7 @@
 import re
 import uuid
 from datetime import UTC, date, datetime
+from xml.etree import ElementTree
 
 _DATE = re.compile(r"^/Date\((-?\d+)\)/$")
 
@@ -37,3 +38,27 @@ def clean(record: dict) -> dict:
                 value = value.strip()
         out[key] = value
     return out
+
+
+def _local(element: ElementTree.Element) -> str:
+    return element.tag.rsplit("}", 1)[-1]
+
+
+def entity_properties(edmx: str, entity_set: str) -> list[dict]:
+    """The properties of `entity_set` (e.g. `Accounts`) in a `$metadata` document, as
+    `{"name", "type"}`."""
+    try:
+        elements = list(ElementTree.fromstring(edmx).iter())
+    except ElementTree.ParseError as err:
+        raise ValueError("Exact's $metadata isn't valid XML.") from err
+    sets = {
+        element.get("Name", ""): element.get("EntityType", "") for element in elements if _local(element) == "EntitySet"
+    }
+    name = next((name for name in sets if name.lower() == entity_set.lower()), None)
+    if name is None:
+        raise ValueError(f"The service has no {entity_set}; it has {', '.join(sorted(sets)) or 'no resources'}.")
+    type_name = sets[name].rsplit(".", 1)[-1]
+    for element in elements:
+        if _local(element) == "EntityType" and element.get("Name") == type_name:
+            return [{"name": p.get("Name"), "type": p.get("Type")} for p in element if _local(p) == "Property"]
+    raise ValueError(f"Exact's $metadata doesn't describe {name}'s type, {type_name}.")

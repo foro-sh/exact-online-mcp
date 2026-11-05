@@ -4,11 +4,13 @@ import json
 import httpx
 import pytest
 from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
 
 from exact_mcp import config, toolsets
 from exact_mcp.app import create_server
 
 from .conftest import odata
+from .test_odata_and_config import EDMX
 from .test_tools import ACCOUNT_ID, GL_ACCOUNT_ID, by_resource, call
 
 ORDER_ID = "8f7b2c1e-0000-4000-8000-000000000011"
@@ -47,11 +49,16 @@ async def test_exact_toolsets_switches_on_the_toolsets_it_names(monkeypatch):
     assert len(listed) == 26 + 3 + 3
 
 
+async def test_all_switches_every_toolset_on(monkeypatch):
+    monkeypatch.setenv("EXACT_TOOLSETS", "all")
+    assert len(await tool_names(create_server())) == 26 + 16
+
+
 async def test_every_toolset_is_known_and_read_only(server):
     async with Client(server) as mcp:
         listed = await mcp.list_tools()
     assert set(toolsets.MODULES) == set(config.TOOLSETS)
-    assert len(listed) == 14
+    assert len(listed) == 16
     assert all(t.annotations.read_only_hint for t in listed)
 
 
@@ -297,3 +304,40 @@ async def test_recent_changes_counts_lines_per_journal_and_deletions_per_kind(se
     assert result["deleted"] == {"SalesInvoices": 1}
     assert exact.requests[0].url.params["$filter"] == "Modified ge datetime'2026-11-01'"
     assert exact.requests[1].url.params["$filter"] == "Timestamp gt 1"
+
+
+async def test_query_reads_an_allowed_resource_with_the_agents_odata(server, exact):
+    exact.handler = lambda r: httpx.Response(200, json=odata([{"City": "Utrecht"}]))
+
+    rows = (
+        await call(
+            server, "query", {"resource": "crm/Addresses", "select": ["City"], "filter": "Type eq 1", "orderby": "City"}
+        )
+    )["result"]
+
+    assert rows == [{"City": "Utrecht"}]
+    params = exact.requests[0].url.params
+    assert exact.requests[0].url.path == "/api/v1/123/crm/Addresses"
+    assert (params["$select"], params["$filter"], params["$orderby"]) == ("City", "Type eq 1", "City")
+
+
+async def test_query_refuses_payroll_and_identity_fields_before_calling_exact(server, exact):
+    async with Client(server) as mcp:
+        with pytest.raises(ToolError, match="doesn't read payroll"):
+            await mcp.call_tool("query", {"resource": "payroll/Employees", "select": ["ID"]})
+        with pytest.raises(ToolError, match="identify people"):
+            await mcp.call_tool("query", {"resource": "crm/Contacts", "select": ["FullName", "BirthDate"]})
+    assert exact.requests == []
+
+
+async def test_describe_resource_lists_the_fields_query_may_read(server, exact):
+    with_creator = EDMX.replace(
+        '<Property Name="City" Type="Edm.String"/>',
+        '<Property Name="City" Type="Edm.String"/><Property Name="Creator" Type="Edm.Guid"/>',
+    )
+    exact.handler = lambda r: httpx.Response(200, text=with_creator)
+
+    fields = (await call(server, "describe_resource", {"resource": "crm/Addresses"}))["result"]
+
+    assert fields == [{"name": "ID", "type": "Edm.Guid"}, {"name": "City", "type": "Edm.String"}]
+    assert exact.requests[0].url.path == "/api/v1/123/crm/$metadata"
