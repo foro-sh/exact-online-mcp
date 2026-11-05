@@ -25,3 +25,10 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+# Prefills Connect on the project's Env tab. Exact runs one host per region: outside the
+# Netherlands, edit both URLs there to your region's host (see the README).
+[tool.foro.grants.exact]
+authorization_endpoint = "https://start.exactonline.nl/api/oauth2/auth"
+token_endpoint = "https://start.exactonline.nl/api/oauth2/token"
+client_secret_name = "EXACT_CLIENT_SECRET"

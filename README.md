@@ -50,18 +50,11 @@ You connect it once from the foro dashboard, and from then on foro refreshes it.
 | `EXACT_REGION` | `nl` (default), `be`, `de`, `uk`, `fr`, `es` or `us` |
 | `EXACT_DIVISION` | Optional: the default division number |
 
-**3. Connect.** Under *Upstream grants* on the same Env tab, add a grant and fill in:
-
-| Field | Value (for `nl`; use your region's host) |
-| --- | --- |
-| Name | `exact` |
-| Authorization URL | `https://start.exactonline.nl/api/oauth2/auth` |
-| Token endpoint | `https://start.exactonline.nl/api/oauth2/token` |
-| Client id | From step 1 |
-| Client secret | `EXACT_CLIENT_SECRET` |
-
-Click *Connect*, sign in to Exact and approve access. foro stores the grant and you're back on
-the Env tab. Redeploy if you changed a secret in step 2.
+**3. Connect.** Deploy, then under *Upstream grants* on the same Env tab, click *Connect* on the
+`exact` row. The server declares the grant in its `pyproject.toml`, so the endpoints are filled
+in; add your client ID from step 1. Outside the Netherlands, change `start.exactonline.nl` in
+both URLs to your region's host. Sign in to Exact and approve access, and you're back on the
+Env tab. Redeploy if you changed a secret in step 2.
 
 Until the grant exists, the server still deploys, and every tool says how to connect it.
 
