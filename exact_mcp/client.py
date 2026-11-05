@@ -7,7 +7,7 @@ import httpx
 
 from . import odata
 from .config import Settings
-from .tokens import TokenManager
+from .tokens import BrokerTokens
 
 PAGE_SIZE = 60
 # Waiting out the per-minute limit is fine inside a tool call; the daily limit is not.
@@ -33,7 +33,7 @@ class ExactClient:
     def __init__(
         self,
         http: httpx.AsyncClient,
-        tokens: TokenManager,
+        tokens: BrokerTokens,
         settings: Settings,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.time,
@@ -100,7 +100,7 @@ class ExactClient:
             )
             retry = attempt == 0
             if response.status_code == 401 and retry:
-                # Another replica may have rotated the token since this one cached it.
+                # The cached token may have been revoked early; fetch it again once.
                 self._tokens.invalidate()
                 continue
             if response.status_code == 429:

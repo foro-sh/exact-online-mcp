@@ -117,10 +117,10 @@ async def test_bad_id_is_a_tool_error_not_an_injected_filter(server, exact):
 
 
 async def test_unconfigured_server_answers_with_setup_instructions(monkeypatch):
-    for name in ("EXACT_CLIENT_ID", "EXACT_CLIENT_SECRET", "TOKEN_STORE_URL", "TOKEN_STORE_KEY"):
+    for name in ("FORO_UPSTREAM_BROKER_URL", "FORO_UPSTREAM_BROKER_TOKEN"):
         monkeypatch.delenv(name, raising=False)
 
     async with Client(create_server()) as mcp:
         assert len(await mcp.list_tools()) == 11
-        with pytest.raises(ToolError, match="Exact Online is not connected yet.*EXACT_CLIENT_ID"):
+        with pytest.raises(ToolError, match="foro's upstream broker.*FORO_UPSTREAM_BROKER_URL"):
             await mcp.call_tool("list_divisions", {})

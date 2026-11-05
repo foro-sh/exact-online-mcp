@@ -24,18 +24,18 @@ the user's current division in Exact.
 ## How the connection works
 
 Exact Online uses OAuth 2 with a 10-minute access token, and it issues a new refresh token on
-every refresh. The old one stops working. A foro container has no disk that survives a
-restart, and secrets are fixed at deploy time, so the server keeps its tokens in a Postgres
-database you provide:
+every refresh. The old one stops working. The server never holds the refresh token. It lives
+in an upstream grant on the foro project:
 
-- The tokens live in one row (`exact_online_tokens`), encrypted with `TOKEN_STORE_KEY`
-  (libsodium secretbox).
-- A refresh happens inside a row lock, so two replicas, or a redeploy overlapping the old
-  container, never spend the same refresh token twice.
-- The access token is cached in memory, so the database is only touched about every 10 minutes.
+- foro stores the grant encrypted, and refreshes it under a row lock, so two replicas, or a
+  redeploy overlapping the old container, never spend the same refresh token twice.
+- The server asks foro's upstream broker for an access token (`FORO_UPSTREAM_BROKER_URL`,
+  which foro injects into every container) and caches it until it expires.
+- If a refresh is ever lost, foro marks the grant dead on the project's tabs, and every tool
+  says to reconnect.
 
-A one-time `connect` command does the browser authorisation and puts the first tokens in that
-row. From then on the deployed server refreshes them itself.
+A one-time `connect` command does the browser authorisation and prints the grant to add in the
+dashboard. From then on foro refreshes it.
 
 ## Setup
 
@@ -44,39 +44,32 @@ row. From then on the deployed server refreshes them itself.
 you can copy from the address bar, such as `https://localhost/callback`. Note the client ID and
 secret.
 
-**2. Get a Postgres database.** Any Postgres 13+ works, and a free tier is enough. For EU data
-residency, pick an EU region. Use a database (or role) dedicated to this server.
+**2. Add the secrets on foro.** In the project's Env tab:
 
-**3. Generate the encryption key.**
+| Name | Value |
+| --- | --- |
+| `EXACT_CLIENT_SECRET` | From step 1, saved as a secret. foro sends it when it refreshes |
+| `EXACT_REGION` | `nl` (default), `be`, `de`, `uk`, `fr`, `es` or `us` |
+| `EXACT_DIVISION` | Optional: the default division number |
+
+**3. Authorise once, locally.**
 
 ```sh
 uv sync
-uv run python -m exact_mcp.connect keygen
-```
-
-**4. Authorise once, locally.**
-
-```sh
 export EXACT_CLIENT_ID=... EXACT_CLIENT_SECRET=... EXACT_REGION=nl
 export EXACT_REDIRECT_URI=https://localhost/callback
-export TOKEN_STORE_URL=postgresql://... TOKEN_STORE_KEY=...
 uv run python -m exact_mcp.connect
 ```
 
-Open the printed URL, approve access, and paste the address Exact redirects to.
+Open the printed URL, approve access, and paste the address Exact redirects to. The command
+then waits about 10 minutes, until the first access token is nearly expired, because Exact
+refuses an earlier refresh. Leave it running.
 
-**5. Deploy on foro.** Add these as secrets in the project's dashboard, then redeploy:
+**4. Add the grant.** Under *Upstream grants* on the same Env tab, add the grant `connect`
+printed: name `exact`, the token endpoint, the client ID, `EXACT_CLIENT_SECRET` as the client
+secret, and the refresh token. Redeploy if you changed a secret in step 2.
 
-| Secret | Value |
-| --- | --- |
-| `EXACT_CLIENT_ID`, `EXACT_CLIENT_SECRET` | From step 1 |
-| `EXACT_REGION` | `nl` (default), `be`, `de`, `uk`, `fr`, `es` or `us` |
-| `EXACT_DIVISION` | Optional: the default division number |
-| `TOKEN_STORE_URL` | The Postgres connection string from step 2 |
-| `TOKEN_STORE_KEY` | The key from step 3 |
-
-Until these are set, the server still deploys, and every tool answers with the list of
-missing secrets.
+Until the grant exists, the server still deploys, and every tool says how to connect it.
 
 ## Limits
 
@@ -90,8 +83,7 @@ missing secrets.
 
 ```sh
 uv sync
-uv run pytest                     # Postgres store tests skip without TEST_DATABASE_URL
-TEST_DATABASE_URL=postgresql://... uv run pytest
+uv run pytest
 uv run ruff format . && uv run ruff check .
 ```
 
@@ -109,6 +101,9 @@ Checked against [Exact's REST reference](https://start.exactonline.nl/docs/HlpRe
 Consistent across third-party sources, but not in Exact's own docs:
 
 - The access token lasts 10 minutes, and Exact refuses a refresh before its last ~30 seconds.
+  foro hands a token out as expired 30 seconds early, so its refreshes land right at the
+  start of that window. Unverified: whether Exact answers a refresh that comes too early with
+  `invalid_grant`, which makes foro mark the grant dead, or with an error foro retries.
 - Every refresh rotates the refresh token, and the old one stops working.
 
 Still to check on a test company:

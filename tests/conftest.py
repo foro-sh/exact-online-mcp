@@ -1,7 +1,4 @@
-import asyncio
-import base64
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -9,37 +6,20 @@ import pytest
 
 from exact_mcp.client import ExactClient
 from exact_mcp.config import load_settings
-from exact_mcp.tokens import TokenManager, TokenSet, TokenSlot
+from exact_mcp.tokens import BrokerTokens
 
 NOW = datetime(2026, 10, 17, 12, 0, tzinfo=UTC)
 
+BROKER = "http://worker:3005"
+
 ENV = {
-    "EXACT_CLIENT_ID": "client-id",
-    "EXACT_CLIENT_SECRET": "client-secret",
-    "TOKEN_STORE_URL": "postgresql://unused",
-    "TOKEN_STORE_KEY": base64.b64encode(b"k" * 32).decode(),
+    "FORO_UPSTREAM_BROKER_URL": f"{BROKER}/",
+    "FORO_UPSTREAM_BROKER_TOKEN": "project.capability",
 }
 
 
-class MemoryTokenStore:
-    def __init__(self, tokens: TokenSet):
-        self.tokens = tokens
-        self._lock = asyncio.Lock()
-
-    @asynccontextmanager
-    async def locked(self) -> AsyncIterator[TokenSlot]:
-        async with self._lock:
-            slot = TokenSlot(self.tokens)
-            yield slot
-            if slot.changed:
-                self.tokens = slot.tokens
-
-    async def put(self, tokens: TokenSet) -> None:
-        self.tokens = tokens
-
-
-def fresh_tokens(access: str = "access-1", refresh: str = "refresh-1") -> TokenSet:
-    return TokenSet(refresh_token=refresh, access_token=access, expires_at=NOW + timedelta(minutes=9))
+def broker_token(access: str = "access-1", expires_at: datetime = NOW + timedelta(minutes=9)) -> httpx.Response:
+    return httpx.Response(200, json={"access_token": access, "expires_at": expires_at.isoformat(), "extra": {}})
 
 
 @pytest.fixture
@@ -82,5 +62,6 @@ def client(exact, settings, sleeps):
         sleeps.append(seconds)
 
     http = exact.http()
-    tokens = TokenManager(MemoryTokenStore(fresh_tokens()), http, settings, clock=lambda: NOW)
+    tokens = BrokerTokens(http, settings, clock=lambda: NOW)
+    tokens._cached = ("access-1", NOW + timedelta(minutes=9))
     return ExactClient(http, tokens, settings, sleep=sleep, clock=lambda: NOW.timestamp())

@@ -4,7 +4,7 @@ from fastmcp import FastMCP
 from . import tools
 from .client import ExactClient
 from .config import load_settings
-from .tokens import PostgresTokenStore, TokenManager
+from .tokens import BrokerTokens
 
 INSTRUCTIONS = """\
 Read-only access to one Exact Online connection: customers and suppliers, open receivables and
@@ -16,7 +16,7 @@ through everything."""
 
 class Connection:
     """Built on the first tool call, not at startup, so a freshly templated server deploys and
-    answers with setup instructions before its secrets exist."""
+    answers with setup instructions before it is connected."""
 
     def __init__(self) -> None:
         self._client: ExactClient | None = None
@@ -25,8 +25,7 @@ class Connection:
         if self._client is None:
             settings = load_settings()
             http = httpx.AsyncClient(timeout=30)
-            store = PostgresTokenStore(settings.token_store_url, settings.token_store_key, settings.token_key)
-            self._client = ExactClient(http, TokenManager(store, http, settings), settings)
+            self._client = ExactClient(http, BrokerTokens(http, settings), settings)
         return self._client
 
 

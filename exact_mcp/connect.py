@@ -1,30 +1,29 @@
-"""One-time Exact Online authorisation: seeds the token store the server refreshes from.
+"""One-time Exact Online authorisation: prints the upstream grant to add on the foro project.
 
-uv run python -m exact_mcp.connect keygen   # print a TOKEN_STORE_KEY
-uv run python -m exact_mcp.connect          # authorise and store the first tokens
+uv run python -m exact_mcp.connect
 """
 
-import argparse
 import asyncio
-import base64
 import os
 import sys
+from datetime import timedelta
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
-import nacl.utils
-from nacl.secret import SecretBox
 
-from .client import ExactClient
-from .config import ConfigError, Settings, load_settings
-from .tokens import PostgresTokenStore, TokenManager, exchange_code
+from .config import GRANT_NAME, ConfigError, base_url, region_from
+from .tokens import exchange_code, utcnow
+
+# Exact refuses a refresh until the access token's last 30 seconds, so the first one foro makes
+# must not come sooner. The grant it prints carries no access token for foro to wait out.
+REFRESH_WINDOW = timedelta(seconds=30)
 
 
-def authorize_url(settings: Settings, redirect_uri: str) -> str:
+def authorize_url(base: str, client_id: str, redirect_uri: str) -> str:
     query = urlencode(
-        {"client_id": settings.client_id, "redirect_uri": redirect_uri, "response_type": "code", "force_login": "0"}
+        {"client_id": client_id, "redirect_uri": redirect_uri, "response_type": "code", "force_login": "0"}
     )
-    return f"{settings.base_url}/api/oauth2/auth?{query}"
+    return f"{base}/api/oauth2/auth?{query}"
 
 
 def code_from(pasted: str) -> str:
@@ -38,41 +37,51 @@ def code_from(pasted: str) -> str:
     return codes[0]
 
 
-def prompt_for_code(settings: Settings, redirect_uri: str) -> str:
+def prompt_for_code(base: str, client_id: str, redirect_uri: str) -> str:
     print("1. Open this URL, sign in to Exact Online and approve access:\n")
-    print(f"   {authorize_url(settings, redirect_uri)}\n")
+    print(f"   {authorize_url(base, client_id, redirect_uri)}\n")
     print("2. Exact redirects to your redirect URI. Paste that full address here")
     print("   (the page itself may fail to load - only the address matters).\n")
     return code_from(input("> "))
 
 
-async def connect(settings: Settings, redirect_uri: str, code: str) -> None:
-    store = PostgresTokenStore(settings.token_store_url, settings.token_store_key, settings.token_key)
-    await store.init()
+async def connect(base: str, client_id: str, client_secret: str, redirect_uri: str, code: str) -> None:
     async with httpx.AsyncClient(timeout=30) as http:
-        await store.put(await exchange_code(http, settings, code, redirect_uri))
-        me = await ExactClient(http, TokenManager(store, http, settings), settings).me()
+        tokens = await exchange_code(http, base, client_id, client_secret, code, redirect_uri)
+        response = await http.get(
+            f"{base}/api/v1/current/Me",
+            params={"$select": "CurrentDivision,FullName"},
+            headers={"Authorization": f"Bearer {tokens.access_token}", "Accept": "application/json"},
+        )
+        response.raise_for_status()
+        me = response.json()["d"]["results"][0]
     print(f"\nConnected as {me['FullName']} (default division {me['CurrentDivision']}).")
-    print("Tokens are stored encrypted; the deployed server refreshes them from here on.")
+
+    wait = (tokens.expires_at - REFRESH_WINDOW - utcnow()).total_seconds()
+    if wait > 0:
+        print(f"Waiting {wait / 60:.0f} minutes, until Exact will accept foro's first refresh...")
+        await asyncio.sleep(wait)
+
+    print("\n3. In the foro dashboard, open the project's Env tab and add an upstream grant:\n")
+    print(f"   Name            {GRANT_NAME}")
+    print(f"   Token endpoint  {base}/api/oauth2/token")
+    print(f"   Client id       {client_id}")
+    print("   Client secret   EXACT_CLIENT_SECRET")
+    print(f"   Refresh token   {tokens.refresh_token}\n")
+    print("The refresh token works once: foro spends it on its first refresh and keeps the next one.")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="python -m exact_mcp.connect", description=__doc__.splitlines()[0])
-    parser.add_argument("command", nargs="?", choices=["keygen"], help="print a new TOKEN_STORE_KEY and exit")
-    args = parser.parse_args()
-
-    if args.command == "keygen":
-        print(base64.b64encode(nacl.utils.random(SecretBox.KEY_SIZE)).decode())
-        return
-
+    names = ("EXACT_CLIENT_ID", "EXACT_CLIENT_SECRET", "EXACT_REDIRECT_URI")
+    if missing := [name for name in names if not os.environ.get(name)]:
+        sys.exit(f"Set {', '.join(missing)} (see the README).")
     try:
-        settings = load_settings()
-        redirect_uri = os.environ["EXACT_REDIRECT_URI"]
-    except KeyError:
-        sys.exit("Set EXACT_REDIRECT_URI to the redirect URI registered on your Exact app.")
+        base = base_url(region_from(dict(os.environ)))
     except ConfigError as err:
         sys.exit(str(err))
-    asyncio.run(connect(settings, redirect_uri, prompt_for_code(settings, redirect_uri)))
+    client_id, redirect_uri = os.environ["EXACT_CLIENT_ID"], os.environ["EXACT_REDIRECT_URI"]
+    code = prompt_for_code(base, client_id, redirect_uri)
+    asyncio.run(connect(base, client_id, os.environ["EXACT_CLIENT_SECRET"], redirect_uri, code))
 
 
 if __name__ == "__main__":
