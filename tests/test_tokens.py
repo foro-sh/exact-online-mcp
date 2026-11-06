@@ -34,6 +34,18 @@ async def test_token_is_cached_until_its_expiry(exact, settings):
     assert len(exact.requests) == 2
 
 
+async def test_token_without_expiry_is_cached_until_invalidated(exact, settings):
+    exact.handler = lambda r: httpx.Response(200, json={"access_token": "access-1", "expires_at": None, "extra": {}})
+    source = tokens(exact, settings, now=NOW + timedelta(days=3650))
+    await source.access_token()
+    await source.access_token()
+    assert len(exact.requests) == 1
+
+    source.invalidate()
+    await source.access_token()
+    assert len(exact.requests) == 2
+
+
 async def test_concurrent_callers_share_one_fetch(exact, settings):
     exact.handler = lambda r: broker_token()
     source = tokens(exact, settings)

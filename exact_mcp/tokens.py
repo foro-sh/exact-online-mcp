@@ -6,6 +6,8 @@ import httpx
 
 from .config import GRANT_NAME, Settings
 
+NEVER = datetime.max.replace(tzinfo=UTC)
+
 
 class NotConnectedError(Exception):
     pass
@@ -69,4 +71,6 @@ class BrokerTokens:
                 f"foro could not get an Exact Online token ({response.status_code}); try again shortly."
             )
         body = response.json()
-        return body["access_token"], datetime.fromisoformat(body["expires_at"])
+        # foro sends no expiry for a token that never lapses; it is kept until Exact refuses it.
+        expires_at = datetime.fromisoformat(body["expires_at"]) if body.get("expires_at") else NEVER
+        return body["access_token"], expires_at
