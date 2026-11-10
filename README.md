@@ -239,14 +239,18 @@ Consistent across third-party sources, but not in Exact's own docs:
 - For bookkeeping:
   - The XML API takes the REST API's OAuth token as `Authorization: Bearer`, with `Topic` and
     `_Division_` in the query.
-  - A POST takes dates as a timestamp at midnight UTC (`2026-10-01T00:00:00Z`), as the Python
-    and Go clients send them. Exact only documents the `/Date(ms)/` form it answers with.
+  - A POST takes dates as ISO 8601, not the `/Date(ms)/` form Exact answers with. The server
+    sends midnight UTC (`2026-10-01T00:00:00Z`), as the Python and Go clients do.
+  - VAT codes are sent padded to three characters (`2  `), as Exact holds them and the Python
+    client sends them.
+  - VAT percentages and discounts are fractions: Exact's own example sets a 5% discount as
+    `0.05`, and clients multiply `VATPercentage` by 100.
   - A credit note's amounts are negative.
   - Document type 20 is a purchase invoice and 10 a sales invoice. This comes from a community
     example; Exact doesn't list them.
   - The MatchSets XML: a `MatchLine` per entry, with the entry's amount on the receivables or
-    payables account, as in Brixxs' published example and the Go client's types. Exact has no
-    published example of its own.
+    payables account. Two independent examples agree: Brixxs' upload, and a MatchSets download
+    recorded in the Go XML client's source. Exact publishes its schema only to signed-in users.
 
 Still to check on a test company:
 
@@ -278,8 +282,8 @@ Still to check on a test company:
 - Whether `$expand` of invoice lines works, as some third-party clients use it. It would make
   the `get_` invoice tools one call.
 - What the bookkeeping toolset assumes beyond that, none of it tried on a live company yet:
-  - Whether a VAT code's `Percentage` is a fraction (0.21) or a percent (21). Neither Exact nor
-    the clients say. No VAT rate reaches 100%, so the server reads a value above 1 as a percent.
+  - That `VATCodes.Percentage` is a fraction like other percentages. The server reads a value
+    above 1 as a percent anyway, since no VAT rate reaches 100%.
   - That Exact accepts `Type` on a new entry, which its docs list but don't mark as settable.
   - That `FinancialTransactionEntryID eq null` picks out documents no entry was booked from, and
     that booking an entry with a `Document` fills it.

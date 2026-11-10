@@ -100,7 +100,7 @@ async def test_book_purchase_invoice_posts_the_entry_with_its_lines(server, exac
         "Description": "INV-114",
         "Document": DOCUMENT_ID,
         # The GL account's own VAT code, sent so the preview and the booking agree.
-        "PurchaseEntryLines": [{"GLAccount": COSTS_ID, "AmountFC": 100.0, "VATCode": "2", "Description": "Licences"}],
+        "PurchaseEntryLines": [{"GLAccount": COSTS_ID, "AmountFC": 100.0, "VATCode": "2  ", "Description": "Licences"}],
     }
     duplicate_check = next(r for r in exact.requests if r.url.path.endswith("PurchaseEntries") and r.method == "GET")
     assert duplicate_check.url.params["$filter"] == f"Supplier eq guid'{SUPPLIER_ID}' and YourRef eq 'INV-114'"
@@ -218,7 +218,7 @@ async def test_book_sales_invoice_needs_a_number_or_reference_and_checks_it(serv
     assert resource == "SalesEntries"
     assert body["Customer"] == ACCOUNT_ID
     assert body["YourRef"] == "in_1Q2w3E"
-    assert body["SalesEntryLines"][0]["VATCode"] == "9"
+    assert body["SalesEntryLines"][0]["VATCode"] == "9  "
 
 
 GENERAL = [{"Code": "90", "IsBlocked": False, "AllowVAT": False}]
@@ -301,7 +301,9 @@ async def test_create_account_makes_a_supplier_with_its_purchase_defaults(server
     )
 
     assert result["created"] is True
-    assert books.posted == [("Accounts", {"Name": "Acme", "IsSupplier": True, "Country": "NL", "PurchaseVATCode": "2"})]
+    assert books.posted == [
+        ("Accounts", {"Name": "Acme", "IsSupplier": True, "Country": "NL", "PurchaseVATCode": "2  "})
+    ]
 
 
 async def test_upload_document_stores_the_file_as_a_purchase_invoice(server, exact):

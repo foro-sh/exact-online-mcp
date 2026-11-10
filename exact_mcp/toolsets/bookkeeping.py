@@ -130,6 +130,11 @@ async def _vat_codes(client, division) -> dict[str, dict]:
     return {row["Code"]: row for row in rows}
 
 
+def _vat_code(code: str) -> str:
+    # Exact holds VAT codes padded to three characters, and the clients that book send them so.
+    return code.ljust(3)
+
+
 def _rate(vat: dict) -> float:
     # Exact's docs don't give Percentage's unit. No VAT rate reaches 100%, so above 1 it is a percent.
     percentage = vat["Percentage"] or 0
@@ -169,7 +174,7 @@ def _invoice_lines(lines: list[InvoiceLine], chart, vat_codes, side: Side) -> tu
         vat_amount = _vat_on_invoice(line, vat)
         entry = {"GLAccount": account["ID"], "AmountFC": line.amount}
         optional = {
-            "VATCode": code,
+            "VATCode": _vat_code(code) if code else None,
             "VATAmountFC": line.vat_amount,
             "Description": line.description,
             "CostCenter": line.cost_center,
@@ -693,8 +698,8 @@ def register(tool, get_client) -> None:
             "Postcode": postcode,
             "City": city,
             "Country": country.upper() if country else None,
-            "PurchaseVATCode": default_vat_code if supplier else None,
-            "SalesVATCode": default_vat_code if customer else None,
+            "PurchaseVATCode": _vat_code(default_vat_code) if default_vat_code and supplier else None,
+            "SalesVATCode": _vat_code(default_vat_code) if default_vat_code and customer else None,
             "PaymentConditionPurchase": payment_condition if supplier else None,
             "PaymentConditionSales": payment_condition if customer else None,
         }
