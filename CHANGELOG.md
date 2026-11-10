@@ -1,3 +1,9 @@
+## [0.2.0](https://github.com/foro-sh/exact-online-mcp/compare/v0.1.0...v0.2.0) (2026-11-10)
+
+### Features
+
+* list every tool and let foro policy decide ([b55eeb6](https://github.com/foro-sh/exact-online-mcp/commit/b55eeb677eee367f332f1387418eea2221df39d5))
+
 ## [0.1.0](https://github.com/foro-sh/exact-online-mcp/compare/v0.0.0...v0.1.0) (2026-11-10)
 
 ### ⚠ BREAKING CHANGES
