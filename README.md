@@ -1,10 +1,13 @@
 # Exact Online MCP
 
-A read-only [MCP](https://modelcontextprotocol.io) server for [Exact Online](https://www.exact.com),
-built to deploy on [foro.sh](https://foro.sh). It lets an agent work with customers and suppliers,
+An [MCP](https://modelcontextprotocol.io) server for [Exact Online](https://www.exact.com), built
+to deploy on [foro.sh](https://foro.sh). It lets an agent work with customers and suppliers,
 sales and purchase invoices, open receivables and payables, the general ledger and bank
-transactions, profit and loss, revenue, VAT returns, sales orders and items, without being able
-to change anything in the books.
+transactions, profit and loss, revenue, VAT returns, sales orders and items.
+
+It only reads, unless the `bookkeeping` toolset is switched on. That toolset lets the agent do the
+bookkeeping: book purchase and sales invoices and journal entries, add suppliers and customers,
+store invoice files, and match payments to the invoices they settle.
 
 ## Tools
 
@@ -30,6 +33,8 @@ to change anything in the books.
 | `budget_vs_actual` | Budget against actual per P&L account over a range of periods |
 | `revenue_by_period` | Revenue per period of one financial year |
 | `financial_periods` | The start and end date of each financial period |
+| `list_journals` | The journals entries are booked in, by type, with their bank or suspense account |
+| `list_vat_codes` | VAT codes with their percentage, type and whether they're for sales or purchases |
 | `tax_returns` | VAT and other tax returns, with their due date and status |
 
 Every tool takes an optional `division`. Without it, the server uses `EXACT_DIVISION`, or else
@@ -38,8 +43,9 @@ the user's current division in Exact.
 ### Toolsets
 
 The tools above are always on. These groups stay off until `EXACT_TOOLSETS` on the project's Env
-tab names them, such as `orders,projects`, or `all`. Most need a module that only some Exact
-packages have.
+tab names them, such as `orders,projects`, or `all`. `all` leaves out `bookkeeping`, the only
+toolset that writes, so it has to be named: `all,bookkeeping`. Most need a module that only some
+Exact packages have.
 
 | Toolset | Tools | Needs |
 | --- | --- | --- |
@@ -50,6 +56,7 @@ packages have.
 | `documents` | `search_documents`, `get_document` | |
 | `changes` | `recent_changes` | |
 | `query` | `describe_resource`, `query` | |
+| `bookkeeping` | `unbooked_documents`, `suggest_booking`, `book_purchase_invoice`, `book_sales_invoice`, `book_journal_entry`, `create_account`, `upload_document`, `reconciliation_suggestions`, `match_open_items` | An Exact app allowed to manage, not only read, financial data (see below) |
 
 `list_contacts` only reads a contact's name, job title and business email and phone.
 `project_hours` adds hours up per project and hour type, not per person.
@@ -58,6 +65,50 @@ packages have.
 `describe_resource` lists a resource's fields. Neither reads payroll, HR, user or mailbox
 resources, or a field that identifies a person, names a user or holds a file (see
 `exact_mcp/scope.py`).
+
+### Bookkeeping
+
+| Tool | What it does |
+| --- | --- |
+| `unbooked_documents` | Purchase (or sales) invoice documents in Exact that no entry is booked from yet: the to-do list |
+| `suggest_booking` | How a supplier's or customer's invoices were booked before: its defaults, and each GL account, VAT code and cost center on its recent invoices, most used first |
+| `book_purchase_invoice` | Books a purchase invoice or credit note, linked to its document |
+| `book_sales_invoice` | Books a sales invoice made outside Exact, such as in a webshop |
+| `book_journal_entry` | Books a balanced general journal entry: accruals, depreciation, reclassifications, clearing a suspense account |
+| `create_account` | Adds a supplier or customer |
+| `upload_document` | Stores an invoice's file in Exact, to book with its `document_id` |
+| `reconciliation_suggestions` | Sets of open receivables or payables that settle each other: an account that adds up to zero, a payment that names its invoices, or a payment with exactly one invoice of its amount |
+| `match_open_items` | Matches such a set in Exact, so the invoice and its payment are no longer open |
+
+It also adds two prompts that walk an agent through the usual work: `book_purchase_invoices`
+and `reconcile_open_items`. The first reads each invoice's file with `get_document`, so switch on
+`documents,bookkeeping` together.
+
+What keeps it from booking something wrong:
+
+- Every write tool takes `dry_run`. It checks everything and shows what would be booked, without
+  booking it.
+- Everything is checked before anything is sent:
+  - Every GL account must exist and not be blocked. An invoice line can't go on a receivables,
+    payables, VAT, cash or bank account, and a journal entry line can't go on cash or bank.
+  - Every VAT code must exist, not be blocked, and be for the right side (sales or purchases).
+  - A journal entry must balance.
+  - Open items only match when they add up to zero.
+- `expected_total` is the invoice's own total. The server works out each line's VAT from its VAT
+  code, as Exact does, and refuses an invoice whose lines don't add up to it.
+- An invoice that looks booked already is refused:
+  - A purchase invoice when the supplier already has its invoice number.
+  - A sales invoice when its invoice number or reference is already booked.
+
+  The same goes for a supplier or customer whose name, VAT number or chamber of commerce number
+  Exact already has. `allow_duplicate` overrides this.
+- If Exact doesn't answer a write in time, the server doesn't send it again, because Exact may
+  have booked it. It says to look the booking up first.
+- Write tools only add: an entry, an account, a document or a match. They never change or delete
+  one. A wrong booking is corrected the usual way, with a reversal or a journal entry.
+
+Matching goes through Exact's XML API (`docs/XMLUpload.aspx?Topic=MatchSets`), because the REST
+API has no way to match. The Exact app's access token works for both.
 
 ## How the connection works
 
@@ -78,7 +129,9 @@ You connect it once from the foro dashboard, and from then on foro refreshes it.
 
 **1. Register an Exact app.** In the [Exact App Center](https://apps.exactonline.com), under
 *Manage* → *Apps*, register an app for your region with redirect URI
-`https://foro.sh/api/upstream-grants/callback`. Note the client ID and secret.
+`https://foro.sh/api/upstream-grants/callback`. Note the client ID and secret. For the
+`bookkeeping` toolset, give the app the rights to manage (not only read) financial accounting,
+CRM accounts and documents.
 
 **2. Add the secrets on foro.** In the project's Env tab:
 
@@ -112,7 +165,11 @@ Until the grant exists, the server still deploys, and every tool says how to con
 - `financial_overview` makes three calls.
 - `project_hours` and `subscription_mrr` read endpoints without a bulk version, up to 2,000 rows
   each. `stock_levels` checks reorder points on up to 1,000 rows.
-- `get_document` returns at most 10 MB of files, which go into the agent's context.
+- `get_document` returns at most 10 MB of files, which go into the agent's context, and
+  `upload_document` takes at most 10 MB.
+- Booking an invoice makes about five calls: the journals, the chart of accounts, the VAT codes,
+  the check for a double booking, and the booking itself. `match_open_items` makes three.
+  `reconciliation_suggestions` reads open items 60 a call.
 
 ## Development
 
@@ -182,5 +239,19 @@ Still to check on a test company:
   transaction lines itself.
 - Whether `$expand` of invoice lines works, as some third-party clients use it. It would make
   the `get_` invoice tools one call.
+- What the bookkeeping toolset assumes, none of it tried on a live company yet:
+  - Exact takes ISO dates (`2026-10-01`) in a POST.
+  - A negative entry is booked as a credit note, without setting `Type`.
+  - A VAT code's `Percentage` is a fraction (0.21), and a `Charged` (reverse-charge) code adds
+    nothing to the invoice total.
+  - Document type 20 is a purchase invoice and 10 a sales invoice. Exact doesn't list its
+    document types, and these come from a community example.
+  - `FinancialTransactionEntryID eq null` picks out documents no entry was booked from, and
+    booking an entry with a `Document` fills it.
+  - Unmatched payments show in `ReceivablesList` and `PayablesList` with the opposite sign of
+    the invoices.
+  - The MatchSets XML: a `MatchLine` per entry, with the entry's total on the receivables or
+    payables account, as in Brixxs' published example. Also that the answer's `Message` types 0
+    and 3 are errors.
 - How long an unused refresh token lives. Reports say 30 days, which would mean a server
   idle for a month needs reconnecting.
