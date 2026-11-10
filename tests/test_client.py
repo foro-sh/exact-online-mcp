@@ -172,3 +172,49 @@ async def test_metadata_asks_for_the_services_edmx(client, exact):
     assert await client.metadata("read/financial") == "<edmx:Edmx/>"
     assert exact.requests[0].url.path == "/api/v1/123/read/financial/$metadata"
     assert exact.requests[0].headers["Accept"] == "application/xml"
+
+
+async def test_create_posts_json_and_returns_the_clean_record(client, exact):
+    exact.handler = lambda r: httpx.Response(201, json={"d": {"__metadata": {}, "EntryID": "e1", "YourRef": " A "}})
+
+    record = await client.create("purchaseentry/PurchaseEntries", {"Journal": "60"})
+
+    request = exact.requests[0]
+    assert record == {"EntryID": "e1", "YourRef": "A"}
+    assert request.method == "POST"
+    assert request.url.path == "/api/v1/123/purchaseentry/PurchaseEntries"
+    assert request.read() == b'{"Journal":"60"}'
+
+
+async def test_a_write_refused_for_the_rate_limit_is_sent_again(client, exact, sleeps):
+    answers = iter(
+        [httpx.Response(429, headers={"X-RateLimit-Remaining": "4000"}), httpx.Response(201, json={"d": {}})]
+    )
+    exact.handler = lambda r: next(answers)
+
+    await client.create("crm/Accounts", {"Name": "Acme"})
+
+    assert [r.method for r in exact.requests] == ["POST", "POST"]
+    assert sleeps == [61.0]
+
+
+async def test_a_write_that_times_out_is_not_sent_again(client, exact):
+    def timeout(request):
+        raise httpx.ReadTimeout("slow", request=request)
+
+    exact.handler = timeout
+
+    with pytest.raises(ExactError, match="may or may not have been booked"):
+        await client.create("purchaseentry/PurchaseEntries", {"Journal": "60"})
+    assert len(exact.requests) == 1
+
+
+async def test_upload_xml_posts_to_the_xml_api_for_the_division(client, exact):
+    exact.handler = lambda r: httpx.Response(200, text="<eExact/>")
+
+    assert await client.upload_xml("MatchSets", "<eExact/>") == "<eExact/>"
+
+    request = exact.requests[0]
+    assert request.url.path == "/docs/XMLUpload.aspx"
+    assert dict(request.url.params) == {"Topic": "MatchSets", "_Division_": "123"}
+    assert request.headers["Content-Type"] == "application/xml"

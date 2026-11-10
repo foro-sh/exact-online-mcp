@@ -10,12 +10,15 @@ def string(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def guid(value: str) -> str:
+def parse_guid(value: str) -> str:
     try:
-        parsed = uuid.UUID(value)
+        return str(uuid.UUID(value))
     except ValueError as err:
         raise ValueError(f"{value!r} is not an Exact Online ID (a GUID)") from err
-    return f"guid'{parsed}'"
+
+
+def guid(value: str) -> str:
+    return f"guid'{parse_guid(value)}'"
 
 
 def datetime_literal(value: date) -> str:
