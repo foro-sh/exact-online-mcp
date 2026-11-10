@@ -94,6 +94,7 @@ What keeps it from booking something wrong:
   - Every VAT code must exist, not be blocked, and be for the right side (sales or purchases).
   - A journal entry must balance.
   - Open items only match when they add up to zero.
+  - A Dutch VAT number on a new account must pass the Belastingdienst's check.
 - `expected_total` is the invoice's own total. The server works out each line's VAT from its VAT
   code, as Exact does, and refuses an invoice whose lines don't add up to it.
 - An invoice that looks booked already is refused:
@@ -175,8 +176,8 @@ Until the grant exists, the server still deploys, and every tool says how to con
 - `financial_overview` makes three calls.
 - `project_hours` and `subscription_mrr` read endpoints without a bulk version, up to 2,000 rows
   each. `stock_levels` checks reorder points on up to 1,000 rows.
-- `get_document` returns at most 10 MB of files, which go into the agent's context, and
-  `upload_document` takes at most 10 MB.
+- `get_document` makes one call for the list of files and one per file. It returns at most
+  10 MB of files, which go into the agent's context, and `upload_document` takes at most 10 MB.
 - Booking an invoice makes about five calls: the journals, the chart of accounts, the VAT codes,
   the check for a double booking, and the booking itself. `match_open_items` makes three, and
   `upload_document` three: the document type, the document and its file.

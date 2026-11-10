@@ -4,6 +4,7 @@ it; `all` leaves it out."""
 
 import base64
 import binascii
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
@@ -25,8 +26,6 @@ OPEN_ITEM_TYPES = {20: "receivables", 22: "payables"}
 # Community-documented: Exact doesn't list its document type codes, so upload_document checks the
 # type with documents/DocumentTypes before using it.
 DOCUMENT_TYPES = {"sales_invoice": 10, "purchase_invoice": 20}
-# Total of an invoice against expected_total: a cent either way for rounding.
-CENT = 0.011
 
 DryRun = Annotated[bool, Field(description="Check everything and return what would be booked, without booking it.")]
 CostCenter = Annotated[str | None, Field(description="Cost center code.")]
@@ -100,7 +99,9 @@ def _gl_account(chart: dict[str, dict], code: str, refused: dict[int, str]) -> d
     if account["IsBlocked"]:
         raise ValueError(f"{name} is blocked.")
     if account["Type"] in refused:
-        raise ValueError(f"{name} is a {refused[account['Type']]} account, which can't be booked on here.")
+        kind = refused[account["Type"]]
+        article = "an" if kind[0] in "aeiou" else "a"
+        raise ValueError(f"{name} is {article} {kind} account, which can't be booked on here.")
     return account
 
 
@@ -150,10 +151,14 @@ def _vat_on_invoice(line: InvoiceLine, vat: dict | None) -> float:
     return round(line.amount * _rate(vat), 2)
 
 
-def _invoice_lines(lines: list[InvoiceLine], chart, vat_codes, side: Side) -> tuple[list[dict], list[dict]]:
-    """Exact's lines for the entry, and a preview of each with the VAT it adds."""
+def _invoice_lines(
+    lines: list[InvoiceLine], chart, vat_codes, side: Side, description: str | None
+) -> tuple[list[dict], list[dict]]:
+    """Exact's lines for the entry, and a preview of each with the VAT it adds. A line without
+    a description gets the invoice's."""
     payload, preview = [], []
     for line in lines:
+        line_description = line.description or description
         account = _gl_account(chart, line.gl_account_code, CONTROL_TYPES)
         code = (line.vat_code or account["VATCode"] or "").strip() or None
         vat = None
@@ -176,7 +181,7 @@ def _invoice_lines(lines: list[InvoiceLine], chart, vat_codes, side: Side) -> tu
         optional = {
             "VATCode": _vat_code(code) if code else None,
             "VATAmountFC": line.vat_amount,
-            "Description": line.description,
+            "Description": line_description,
             "CostCenter": line.cost_center,
             "CostUnit": line.cost_unit,
             "Project": odata.parse_guid(line.project_id) if line.project_id else None,
@@ -186,7 +191,7 @@ def _invoice_lines(lines: list[InvoiceLine], chart, vat_codes, side: Side) -> tu
             {
                 "gl_account_code": account["Code"],
                 "gl_account_description": account["Description"],
-                "description": line.description,
+                "description": line_description,
                 "amount": line.amount,
                 "vat_code": code,
                 "vat_rate": _rate(vat) if vat else None,
@@ -200,6 +205,23 @@ def _totals(preview: list[dict]) -> dict:
     net = round(sum(line["amount"] for line in preview), 2)
     vat = round(sum(line["vat_amount"] for line in preview), 2)
     return {"net": net, "vat": vat, "total": round(net + vat, 2)}
+
+
+def _vat_number(number: str) -> str:
+    """The VAT number without spaces or dots. A Dutch one must pass one of the Belastingdienst's
+    two checks, as Exact refuses it otherwise, but only after the dry run."""
+    number = re.sub(r"[\s.]", "", number).upper()
+    # ponytail: only Dutch numbers are checked; other countries are left to Exact.
+    if number.startswith("NL"):
+        digits = number[2:11]
+        valid = re.fullmatch(r"NL\d{9}B\d{2}", number) is not None and (
+            # The old eleven check, or since 2020 mod 97 over the number with N=23, L=21 and B=11.
+            (sum(int(d) * (9 - i) for i, d in enumerate(digits[:8])) - int(digits[8])) % 11 == 0
+            or int(f"2321{digits}11{number[12:]}") % 97 == 1
+        )
+        if not valid:
+            raise ValueError(f"{number} isn't a valid Dutch VAT number, such as NL123456782B01.")
+    return number
 
 
 def _created(record: dict, fields: list[str]) -> dict:
@@ -400,9 +422,12 @@ def register(tool, get_client) -> None:
         div = await client.division(division)
         party = odata.parse_guid(party_id)
         journal = (await _journal(client, div, journal_code, side.journal_type))["Code"]
-        payload, preview = _invoice_lines(lines, await _chart(client, div), await _vat_codes(client, div), side)
+        payload, preview = _invoice_lines(
+            lines, await _chart(client, div), await _vat_codes(client, div), side, header.get("Description")
+        )
         totals = _totals(preview)
-        if expected_total is not None and abs(totals["total"] - expected_total) > CENT:
+        # Exact books exactly what the lines add up to, so a cent off is a wrong payable or receivable.
+        if expected_total is not None and totals["total"] != round(expected_total, 2):
             raise ValueError(
                 f"The lines add up to {totals['total']:.2f} ({totals['net']:.2f} plus {totals['vat']:.2f} VAT), "
                 f"not the invoice's total of {expected_total:.2f}. Check the amounts and VAT codes, or give a "
@@ -664,12 +689,13 @@ def register(tool, get_client) -> None:
         """Create a supplier or customer. Refuses when an account with the same VAT number,
         chamber of commerce number or name exists, and returns those instead: search_accounts
         first, and create one only for a party Exact doesn't know."""
+        vat_number = _vat_number(vat_number) if vat_number else None
         client = await get_client()
         div = await client.division(division)
         if not allow_duplicate:
             same = [f"Name eq {odata.string(name.strip())}"]
             if vat_number:
-                same.append(f"VATNumber eq {odata.string(vat_number.strip())}")
+                same.append(f"VATNumber eq {odata.string(vat_number)}")
             if chamber_of_commerce:
                 same.append(f"ChamberOfCommerce eq {odata.string(chamber_of_commerce.strip())}")
             existing = await client.list(
@@ -707,7 +733,8 @@ def register(tool, get_client) -> None:
         if dry_run:
             return {"created": False, "account": body}
         created = await client.create("crm/Accounts", body, div)
-        return {"created": True, **_created(created, ["ID", "Code", "Name", "IsSupplier", "Status"])}
+        # Exact's answer to the POST leaves most fields empty, so say what was sent.
+        return {"created": True, "ID": created.get("ID"), "account": body}
 
     @tool(writes=True)
     async def upload_document(

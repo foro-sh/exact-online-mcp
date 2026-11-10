@@ -124,6 +124,33 @@ async def test_nothing_is_booked_when_the_lines_miss_the_invoice_total(server, e
     assert books.posted == []
 
 
+async def test_a_total_a_cent_off_is_refused_too(server, exact):
+    exact.handler = books = Books({})
+    line = {"gl_account_code": "4500", "amount": 109.5}
+
+    with pytest.raises(ToolError, match=r"add up to 132.49 .* not .* 132.50"):
+        await call(server, "book_purchase_invoice", purchase(lines=[line], expected_total=132.5))
+    assert books.posted == []
+
+
+async def test_a_line_without_a_description_gets_the_invoice_description(server, exact):
+    exact.handler = books = Books({})
+    line = {"gl_account_code": "4500", "amount": 100.0}
+
+    result = await call(server, "book_purchase_invoice", purchase(lines=[line], description="KPN October"))
+
+    assert result["lines"][0]["description"] == "KPN October"
+    assert books.posted[0][1]["PurchaseEntryLines"][0]["Description"] == "KPN October"
+
+
+async def test_an_invoice_line_on_receivables_is_refused(server, exact):
+    exact.handler = Books({})
+    line = {"gl_account_code": "1300", "amount": 100.0}
+
+    with pytest.raises(ToolError, match=r"1300 \(Debtors\) is an accounts receivable account"):
+        await call(server, "book_purchase_invoice", purchase(lines=[line]))
+
+
 async def test_the_invoice_own_vat_amount_overrides_the_rounding(server, exact):
     exact.handler = books = Books({})
     line = {"gl_account_code": "4500", "amount": 100.0, "vat_amount": 20.99}
@@ -286,10 +313,12 @@ async def test_create_account_refuses_a_party_exact_already_has(server, exact):
     exact.handler = books = Books({"Accounts": [{"ID": ACCOUNT_ID, "Name": "Acme B.V."}]})
 
     with pytest.raises(ToolError, match="already has Acme B.V."):
-        await call(server, "create_account", {"name": "Acme B.V.", "role": "supplier", "vat_number": "NL001"})
+        await call(
+            server, "create_account", {"name": "Acme B.V.", "role": "supplier", "vat_number": "NL 1234.56782B01"}
+        )
 
     params = next(r for r in exact.requests if r.url.path.endswith("Accounts")).url.params
-    assert params["$filter"] == "(Name eq 'Acme B.V.' or VATNumber eq 'NL001')"
+    assert params["$filter"] == "(Name eq 'Acme B.V.' or VATNumber eq 'NL123456782B01')"
     assert books.posted == []
 
 
@@ -300,10 +329,31 @@ async def test_create_account_makes_a_supplier_with_its_purchase_defaults(server
         server, "create_account", {"name": "Acme", "role": "supplier", "country": "nl", "default_vat_code": "2"}
     )
 
-    assert result["created"] is True
+    assert result == {
+        "created": True,
+        "ID": DOCUMENT_ID,
+        "account": {"Name": "Acme", "IsSupplier": True, "Country": "NL", "PurchaseVATCode": "2  "},
+    }
     assert books.posted == [
         ("Accounts", {"Name": "Acme", "IsSupplier": True, "Country": "NL", "PurchaseVATCode": "2  "})
     ]
+
+
+@pytest.mark.parametrize("number", ["NL999999999B01", "NL12345678B01", "NL123456782X01"])
+async def test_create_account_refuses_an_invalid_dutch_vat_number(server, exact, number):
+    exact.handler = books = Books({})
+
+    with pytest.raises(ToolError, match="isn't a valid Dutch VAT number"):
+        await call(server, "create_account", {"name": "Acme", "role": "supplier", "vat_number": number})
+    assert books.posted == []
+
+
+async def test_create_account_takes_a_dutch_vat_number_that_passes_the_new_check(server, exact):
+    exact.handler = books = Books({})
+
+    await call(server, "create_account", {"name": "Acme", "role": "supplier", "vat_number": "nl000099998b57"})
+
+    assert books.posted[0][1]["VATNumber"] == "NL000099998B57"
 
 
 async def test_upload_document_stores_the_file_as_a_purchase_invoice(server, exact):
