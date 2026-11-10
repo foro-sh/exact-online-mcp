@@ -115,6 +115,13 @@ class ExactClient:
             url, params = data.get("__next"), None
         return rows[:limit]
 
+    async def download(self, url: str) -> bytes:
+        """The file behind an Exact URL, such as a document attachment's `Url`. Only Exact's own
+        host gets the access token."""
+        if httpx.URL(url).host != httpx.URL(self._base_url).host:
+            raise ExactError(f"Not downloading {url}: it isn't on {self._base_url}.")
+        return (await self._get(url, None, accept="*/*")).content
+
     async def create(self, resource: str, body: dict, division: int | None = None) -> dict:
         """POST a new record to `resource`, such as `purchaseentry/PurchaseEntries` with its lines,
         and return the record Exact made."""

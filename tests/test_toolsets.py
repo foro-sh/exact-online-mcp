@@ -265,14 +265,17 @@ async def test_search_documents_filters_by_booked_invoice_and_subject(server, ex
     )
 
 
+ATTACHMENT_URL = "https://start.exactonline.nl/docs/SysAttachment.aspx?ID=a1&_Division_=1"
+
+
 async def test_get_document_returns_its_attachment_as_a_file(server, exact):
     pdf = b"%PDF-1.7 test"
 
     def handler(request):
-        if "Attachment" in request.url.params["$select"].split(","):
-            return httpx.Response(200, json=odata([{"ID": "a1", "Attachment": base64.b64encode(pdf).decode()}]))
+        if request.url.path == "/docs/SysAttachment.aspx":
+            return httpx.Response(200, content=pdf)
         return httpx.Response(
-            200, json=odata([{"ID": "a1", "FileName": "invoice.pdf", "FileSize": len(pdf), "Url": "https://x"}])
+            200, json=odata([{"ID": "a1", "FileName": "invoice.pdf", "FileSize": len(pdf), "Url": ATTACHMENT_URL}])
         )
 
     exact.handler = handler
@@ -285,6 +288,18 @@ async def test_get_document_returns_its_attachment_as_a_file(server, exact):
     assert file.resource.mime_type == "application/pdf"
     assert base64.b64decode(file.resource.blob) == pdf
     assert exact.requests[0].url.params["$filter"] == f"Document eq guid'{DOCUMENT_ID}'"
+    assert exact.requests[1].headers["Authorization"].startswith("Bearer ")
+
+
+async def test_get_document_sends_the_token_only_to_exact(server, exact):
+    url = "https://elsewhere.example/file.pdf"
+    exact.handler = lambda r: httpx.Response(
+        200, json=odata([{"ID": "a1", "FileName": "x.pdf", "FileSize": 1, "Url": url}])
+    )
+
+    with pytest.raises(ToolError, match="Not downloading"):
+        await call(server, "get_document", {"document_id": DOCUMENT_ID})
+    assert len(exact.requests) == 1
 
 
 async def test_recent_changes_counts_lines_per_journal_and_deletions_per_kind(server, exact):
