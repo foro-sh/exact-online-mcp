@@ -56,7 +56,7 @@ Exact packages have.
 | `documents` | `search_documents`, `get_document` | |
 | `changes` | `recent_changes` | |
 | `query` | `describe_resource`, `query` | |
-| `bookkeeping` | `unbooked_documents`, `suggest_booking`, `book_purchase_invoice`, `book_sales_invoice`, `book_journal_entry`, `create_account`, `upload_document`, `reconciliation_suggestions`, `match_open_items` | An Exact app allowed to manage, not only read, financial data (see below) |
+| `bookkeeping` | `unbooked_documents`, `suggest_booking`, `book_purchase_invoice`, `book_sales_invoice`, `book_journal_entry`, `create_account`, `upload_document`, `reconciliation_suggestions`, `match_open_items` | An Exact user allowed to book entries and add accounts and documents (see below) |
 
 `list_contacts` only reads a contact's name, job title and business email and phone.
 `project_hours` adds hours up per project and hour type, not per person.
@@ -138,9 +138,10 @@ You connect it once from the foro dashboard, and from then on foro refreshes it.
 
 **1. Register an Exact app.** In the [Exact App Center](https://apps.exactonline.com), under
 *Manage* → *Apps*, register an app for your region with redirect URI
-`https://foro.sh/api/upstream-grants/callback`. Note the client ID and secret. For the
-`bookkeeping` toolset, give the app the rights to manage (not only read) financial accounting,
-CRM accounts and documents.
+`https://foro.sh/api/upstream-grants/callback`. Note the client ID and secret. An app
+registered here has no rights of its own: its token can do whatever the Exact user who connects
+it in step 3 may do. For the `bookkeeping` toolset, that user's roles in Exact must allow booking
+entries and adding accounts and documents in the division.
 
 **2. Add the secrets on foro.** In the project's Env tab:
 
