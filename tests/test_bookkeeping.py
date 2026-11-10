@@ -50,7 +50,11 @@ class Books:
     """Answers each GET with the rows for its resource, and each POST with what it was sent."""
 
     def __init__(self, rows: dict[str, list[dict]]):
-        self.rows = {"Journals": [{"Code": "60", "Description": "Purchase", "IsBlocked": False}], **rows}
+        self.rows = {
+            "Journals": [{"Code": "60", "Description": "Purchase", "IsBlocked": False, "AllowVAT": True}],
+            "DocumentTypes": [{"ID": 20, "Description": "Purchase invoice", "DocumentIsCreatable": True}],
+            **rows,
+        }
         self.rows.setdefault("GLAccounts", CHART)
         self.rows.setdefault("VATCodes", VAT_CODES)
         self.posted: list[tuple[str, object]] = []
@@ -90,7 +94,8 @@ async def test_book_purchase_invoice_posts_the_entry_with_its_lines(server, exac
     assert body == {
         "Journal": "60",
         "Supplier": SUPPLIER_ID,
-        "EntryDate": "2026-10-01",
+        "EntryDate": "2026-10-01T00:00:00Z",
+        "Type": 30,
         "YourRef": "INV-114",
         "Description": "INV-114",
         "Document": DOCUMENT_ID,
@@ -127,6 +132,24 @@ async def test_the_invoice_own_vat_amount_overrides_the_rounding(server, exact):
 
     assert result["total"] == 120.99
     assert books.posted[0][1]["PurchaseEntryLines"][0]["VATAmountFC"] == 20.99
+
+
+async def test_a_negative_invoice_is_booked_as_a_credit_note(server, exact):
+    exact.handler = books = Books({})
+    line = {"gl_account_code": "4500", "amount": -100.0}
+
+    result = await call(server, "book_purchase_invoice", purchase(lines=[line], expected_total=-121))
+
+    assert result["total"] == -121.0
+    assert books.posted[0][1]["Type"] == 31
+
+
+async def test_a_vat_percentage_given_in_percent_reads_as_a_rate(server, exact):
+    exact.handler = Books({"VATCodes": [{**VAT_CODES[0], "Percentage": 21.0}]})
+
+    result = await call(server, "book_purchase_invoice", purchase(dry_run=True))
+
+    assert (result["vat"], result["lines"][0]["vat_rate"]) == (21.0, 0.21)
 
 
 async def test_reverse_charged_vat_is_not_on_the_invoice(server, exact):
@@ -198,14 +221,15 @@ async def test_book_sales_invoice_needs_a_number_or_reference_and_checks_it(serv
     assert body["SalesEntryLines"][0]["VATCode"] == "9"
 
 
+GENERAL = [{"Code": "90", "IsBlocked": False, "AllowVAT": False}]
+
+
 def journal_entry(lines, **overrides) -> dict:
     return {"entry_date": "2026-10-31", "description": "Accrue October rent", "lines": lines, **overrides}
 
 
 async def test_book_journal_entry_books_a_balanced_entry_in_its_period(server, exact):
-    exact.handler = books = Books(
-        {"Journals": [{"Code": "90", "IsBlocked": False}], "FinancialPeriods": [{"FinYear": 2026, "FinPeriod": 10}]}
-    )
+    exact.handler = books = Books({"Journals": GENERAL, "FinancialPeriods": [{"FinYear": 2026, "FinPeriod": 10}]})
     lines = [
         {"gl_account_code": "4500", "amount": 1500},
         {"gl_account_code": "1300", "amount": -1500, "account_id": ACCOUNT_ID, "description": "Owed"},
@@ -219,8 +243,9 @@ async def test_book_journal_entry_books_a_balanced_entry_in_its_period(server, e
     assert body["JournalCode"] == "90"
     assert (body["FinancialYear"], body["FinancialPeriod"]) == (2026, 10)
     assert body["GeneralJournalEntryLines"] == [
-        {"GLAccount": COSTS_ID, "AmountFC": 1500.0, "Date": "2026-10-31", "Description": "Accrue October rent"},
-        {"GLAccount": DEBTORS_ID, "AmountFC": -1500.0, "Date": "2026-10-31", "Description": "Owed",
+        {"GLAccount": COSTS_ID, "AmountFC": 1500.0, "Date": "2026-10-31T00:00:00Z",
+         "Description": "Accrue October rent"},
+        {"GLAccount": DEBTORS_ID, "AmountFC": -1500.0, "Date": "2026-10-31T00:00:00Z", "Description": "Owed",
          "Account": ACCOUNT_ID},
     ]  # fmt: skip
 
@@ -237,11 +262,22 @@ COSTS = {"gl_account_code": "4500", "amount": 10}
     ],
 )
 async def test_an_unbalanced_or_misdirected_journal_entry_is_refused(server, exact, lines, error):
-    exact.handler = books = Books(
-        {"Journals": [{"Code": "90", "IsBlocked": False}], "FinancialPeriods": [{"FinYear": 2026, "FinPeriod": 10}]}
-    )
+    exact.handler = books = Books({"Journals": GENERAL, "FinancialPeriods": [{"FinYear": 2026, "FinPeriod": 10}]})
 
     with pytest.raises(ToolError, match=error):
+        await call(server, "book_journal_entry", journal_entry(lines))
+    assert books.posted == []
+
+
+async def test_a_journal_that_books_vat_refuses_an_account_with_a_vat_code(server, exact):
+    journals = [{**GENERAL[0], "AllowVAT": True}]
+    exact.handler = books = Books({"Journals": journals, "FinancialPeriods": [{"FinYear": 2026, "FinPeriod": 10}]})
+    lines = [
+        {"gl_account_code": "4500", "amount": 10},
+        {"gl_account_code": "1300", "amount": -10, "account_id": ACCOUNT_ID},
+    ]
+
+    with pytest.raises(ToolError, match="Exact would add VAT"):
         await call(server, "book_journal_entry", journal_entry(lines))
     assert books.posted == []
 
@@ -274,11 +310,20 @@ async def test_upload_document_stores_the_file_as_a_purchase_invoice(server, exa
 
     result = await call(server, "upload_document", {"file_name": "inv.pdf", "content_base64": pdf})
 
-    assert result == {"document_id": DOCUMENT_ID, "attachment_id": DOCUMENT_ID, "bytes": 8}
+    assert result == {"document_id": DOCUMENT_ID, "attachment_id": DOCUMENT_ID, "type": "Purchase invoice", "bytes": 8}
     assert books.posted == [
         ("Documents", {"Subject": "inv.pdf", "Type": 20}),
         ("DocumentAttachments", {"Document": DOCUMENT_ID, "FileName": "inv.pdf", "Attachment": pdf}),
     ]
+
+
+async def test_upload_document_checks_the_document_type_first(server, exact):
+    exact.handler = books = Books({"DocumentTypes": []})
+    pdf = base64.b64encode(b"%PDF-1.7").decode()
+
+    with pytest.raises(ToolError, match="no document type 20"):
+        await call(server, "upload_document", {"file_name": "inv.pdf", "content_base64": pdf})
+    assert books.posted == []
 
 
 async def test_upload_document_refuses_what_isnt_base64(server, exact):
@@ -371,6 +416,14 @@ def test_suggest_matches_from_a_settled_account_a_reference_and_a_unique_amount(
     [left] = result["unmatched"]
     assert left["EntryNumber"] == 22
     assert [c["EntryNumber"] for c in left["candidates"]] == [20, 21]
+
+
+def test_a_payment_booked_against_an_invoice_is_a_reference():
+    items = [open_item(1, 40, invoice=7), open_item(2, 40, invoice=8), {**open_item(3, -40), "InvoiceNumber": 8}]
+
+    [suggestion] = matching.suggest_matches(items)["suggestions"]
+
+    assert (suggestion["reason"], [i["EntryNumber"] for i in suggestion["items"]]) == ("reference", [3, 2])
 
 
 def test_match_sets_xml_and_upload_messages():

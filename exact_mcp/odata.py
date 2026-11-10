@@ -21,6 +21,11 @@ def guid(value: str) -> str:
     return f"guid'{parse_guid(value)}'"
 
 
+def post_date(value: date) -> str:
+    """A date as Exact takes it in a POST: midnight UTC, the form the maintained clients send."""
+    return f"{value.isoformat()}T00:00:00Z"
+
+
 def datetime_literal(value: date) -> str:
     return f"datetime'{value.isoformat()}'"
 

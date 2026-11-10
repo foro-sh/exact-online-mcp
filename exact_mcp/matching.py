@@ -53,6 +53,9 @@ def _references(item: dict) -> set[str]:
 
 
 def _mentions(payment: dict, item: dict) -> bool:
+    # A cashflow entry's InvoiceNumber is the invoice it was booked against.
+    if payment.get("InvoiceNumber") and payment["InvoiceNumber"] == item.get("InvoiceNumber"):
+        return True
     tokens = {token.lower() for token in _TOKEN.findall(payment.get("Description") or "")}
     return bool(_references(item) & tokens)
 
@@ -76,7 +79,7 @@ def suggest_matches(open_items: list[dict]) -> dict:
     Per account and currency, in order of how sure the match is:
 
     - `account_settled`: every open item of the account together adds up to zero.
-    - `reference`: a payment whose description names the invoices it adds up to.
+    - `reference`: a payment booked against, or whose description names, the invoices it adds up to.
     - `amount`: a payment with exactly one invoice of the opposite amount.
 
     A payment with several invoices of its amount and no reference to one is left in `unmatched`,

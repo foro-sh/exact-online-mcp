@@ -108,7 +108,16 @@ What keeps it from booking something wrong:
   one. A wrong booking is corrected the usual way, with a reversal or a journal entry.
 
 Matching goes through Exact's XML API (`docs/XMLUpload.aspx?Topic=MatchSets`), because the REST
-API has no way to match. The Exact app's access token works for both.
+API has no way to match. The Exact app's access token works for both. Entries booked through the
+API aren't matched automatically, so `match_open_items` is the only way to match them without
+Exact's own screens.
+
+Exact has told API users that its XML APIs will be discontinued. In July 2026 it said MatchSets
+isn't being phased out yet and has no end date, but that it can't guarantee MatchSets keeps
+working, and no REST replacement is planned yet
+([picqer/exact-php-client#127](https://github.com/picqer/exact-php-client/issues/127)). Watch
+Exact's breaking-changes page: if MatchSets stops working, `match_open_items` stops with it,
+while every other bookkeeping tool keeps working.
 
 ## How the connection works
 
@@ -168,7 +177,8 @@ Until the grant exists, the server still deploys, and every tool says how to con
 - `get_document` returns at most 10 MB of files, which go into the agent's context, and
   `upload_document` takes at most 10 MB.
 - Booking an invoice makes about five calls: the journals, the chart of accounts, the VAT codes,
-  the check for a double booking, and the booking itself. `match_open_items` makes three.
+  the check for a double booking, and the booking itself. `match_open_items` makes three, and
+  `upload_document` three: the document type, the document and its file.
   `reconciliation_suggestions` reads open items 60 a call.
 
 ## Development
@@ -201,6 +211,23 @@ Checked against [Exact's REST reference](https://start.exactonline.nl/docs/HlpRe
   `customer_payment_behaviour` checks that in the server.
 - The purchase order, quotation, opportunity, hour and invoice term status codes, and the entity
   types of `sync/Deleted`.
+- For bookkeeping:
+  - The fields `book_*` sends, and which are mandatory: `Journal`, the party and the lines for an
+    invoice; `JournalCode` and the lines for a journal entry; `AmountFC`, `GLAccount` and
+    `EntryID` (filled by Exact) on a line.
+  - A line without a `VATCode` gets its GL account's default. That's why invoice lines always
+    send one, and why `book_journal_entry` refuses a VAT journal with an account that has a VAT
+    code.
+  - A `Charged` VAT code is a reverse-charge (verlegd) or EU transaction, which puts no VAT on
+    the invoice.
+  - The entry types: 30 and 31 a purchase invoice and credit note, 20 and 21 sales.
+  - `DocumentAttachments` takes `Document`, `FileName` and a Base64 `Attachment`.
+  - `documents/DocumentTypes` says whether a document type can be created, which
+    `upload_document` checks first.
+  - `ReceivablesList` and `PayablesList` hold the entry's journal and entry number, and give a
+    cashflow entry the invoice number of the invoice it was booked against.
+  - The XML API answers an upload with a `Message` per record, of type 0 (error), 1 (warning),
+    2 (success) or 3 (fatal).
 
 Consistent across third-party sources, but not in Exact's own docs:
 
@@ -209,6 +236,17 @@ Consistent across third-party sources, but not in Exact's own docs:
   start of that window. Unverified: whether Exact answers a refresh that comes too early with
   `invalid_grant`, which makes foro mark the grant dead, or with an error foro retries.
 - Every refresh rotates the refresh token, and the old one stops working.
+- For bookkeeping:
+  - The XML API takes the REST API's OAuth token as `Authorization: Bearer`, with `Topic` and
+    `_Division_` in the query.
+  - A POST takes dates as a timestamp at midnight UTC (`2026-10-01T00:00:00Z`), as the Python
+    and Go clients send them. Exact only documents the `/Date(ms)/` form it answers with.
+  - A credit note's amounts are negative.
+  - Document type 20 is a purchase invoice and 10 a sales invoice. This comes from a community
+    example; Exact doesn't list them.
+  - The MatchSets XML: a `MatchLine` per entry, with the entry's amount on the receivables or
+    payables account, as in Brixxs' published example and the Go client's types. Exact has no
+    published example of its own.
 
 Still to check on a test company:
 
@@ -239,19 +277,13 @@ Still to check on a test company:
   transaction lines itself.
 - Whether `$expand` of invoice lines works, as some third-party clients use it. It would make
   the `get_` invoice tools one call.
-- What the bookkeeping toolset assumes, none of it tried on a live company yet:
-  - Exact takes ISO dates (`2026-10-01`) in a POST.
-  - A negative entry is booked as a credit note, without setting `Type`.
-  - A VAT code's `Percentage` is a fraction (0.21), and a `Charged` (reverse-charge) code adds
-    nothing to the invoice total.
-  - Document type 20 is a purchase invoice and 10 a sales invoice. Exact doesn't list its
-    document types, and these come from a community example.
-  - `FinancialTransactionEntryID eq null` picks out documents no entry was booked from, and
-    booking an entry with a `Document` fills it.
-  - Unmatched payments show in `ReceivablesList` and `PayablesList` with the opposite sign of
-    the invoices.
-  - The MatchSets XML: a `MatchLine` per entry, with the entry's total on the receivables or
-    payables account, as in Brixxs' published example. Also that the answer's `Message` types 0
-    and 3 are errors.
+- What the bookkeeping toolset assumes beyond that, none of it tried on a live company yet:
+  - Whether a VAT code's `Percentage` is a fraction (0.21) or a percent (21). Neither Exact nor
+    the clients say. No VAT rate reaches 100%, so the server reads a value above 1 as a percent.
+  - That Exact accepts `Type` on a new entry, which its docs list but don't mark as settable.
+  - That `FinancialTransactionEntryID eq null` picks out documents no entry was booked from, and
+    that booking an entry with a `Document` fills it.
+  - That an unmatched payment shows in `ReceivablesList` and `PayablesList` with the opposite
+    sign of the invoices.
 - How long an unused refresh token lives. Reports say 30 days, which would mean a server
   idle for a month needs reconnecting.

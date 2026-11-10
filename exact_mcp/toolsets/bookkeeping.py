@@ -22,7 +22,8 @@ from .documents import MAX_ATTACHMENT_BYTES
 CASH_TYPES = {10: "cash", 12: "bank", 14: "credit card", 16: "payment service"}
 CONTROL_TYPES = {**CASH_TYPES, 20: "accounts receivable", 22: "accounts payable", 24: "VAT"}
 OPEN_ITEM_TYPES = {20: "receivables", 22: "payables"}
-# Community-documented: Exact doesn't list its document type codes.
+# Community-documented: Exact doesn't list its document type codes, so upload_document checks the
+# type with documents/DocumentTypes before using it.
 DOCUMENT_TYPES = {"sales_invoice": 10, "purchase_invoice": 20}
 # Total of an invoice against expected_total: a cent either way for rounding.
 CENT = 0.011
@@ -73,10 +74,12 @@ class Side:
     journal_type: str
     # What a VAT code's VATTransactionType must allow, besides B (both).
     vat_use: str
+    invoice_type: int
+    credit_note_type: int
 
 
-PURCHASE = Side("purchaseentry/PurchaseEntries", "PurchaseEntryLines", "Supplier", "purchase", "P")
-SALES = Side("salesentry/SalesEntries", "SalesEntryLines", "Customer", "sales", "S")
+PURCHASE = Side("purchaseentry/PurchaseEntries", "PurchaseEntryLines", "Supplier", "purchase", "P", 30, 31)
+SALES = Side("salesentry/SalesEntries", "SalesEntryLines", "Customer", "sales", "S", 20, 21)
 
 
 async def _chart(client, division) -> dict[str, dict]:
@@ -101,10 +104,10 @@ def _gl_account(chart: dict[str, dict], code: str, refused: dict[int, str]) -> d
     return account
 
 
-async def _journal(client, division, code: str | None, journal_type: str) -> str:
+async def _journal(client, division, code: str | None, journal_type: str) -> dict:
     rows = await client.list(
         "financial/Journals",
-        select=["Code", "Description", "IsBlocked"],
+        select=["Code", "Description", "IsBlocked", "AllowVAT"],
         filters=[f"Type eq {JOURNAL_TYPES[journal_type]}"],
         limit=1000,
         division=division,
@@ -113,18 +116,24 @@ async def _journal(client, division, code: str | None, journal_type: str) -> str
     if code is not None:
         if code.strip() not in usable:
             raise ValueError(f"No open {journal_type} journal {code}; this division has {', '.join(usable) or 'none'}.")
-        return code.strip()
+        return usable[code.strip()]
     if len(usable) != 1:
         raise ValueError(
             f"This division has {len(usable) or 'no'} open {journal_type} journals"
             f"{' (' + ', '.join(usable) + ')' if usable else ''}; pass journal_code."
         )
-    return next(iter(usable))
+    return next(iter(usable.values()))
 
 
 async def _vat_codes(client, division) -> dict[str, dict]:
     rows = await client.list("vat/VATCodes", select=VAT_CODE_FIELDS, limit=1000, division=division)
     return {row["Code"]: row for row in rows}
+
+
+def _rate(vat: dict) -> float:
+    # Exact's docs don't give Percentage's unit. No VAT rate reaches 100%, so above 1 it is a percent.
+    percentage = vat["Percentage"] or 0
+    return percentage / 100 if percentage > 1 else percentage
 
 
 def _vat_on_invoice(line: InvoiceLine, vat: dict | None) -> float:
@@ -133,7 +142,7 @@ def _vat_on_invoice(line: InvoiceLine, vat: dict | None) -> float:
     # Reverse-charged VAT is declared, not invoiced; B and N codes add none.
     if vat is None or vat["Charged"] or vat["Type"] in ("B", "N"):
         return 0.0
-    return round(line.amount * (vat["Percentage"] or 0), 2)
+    return round(line.amount * _rate(vat), 2)
 
 
 def _invoice_lines(lines: list[InvoiceLine], chart, vat_codes, side: Side) -> tuple[list[dict], list[dict]]:
@@ -175,7 +184,7 @@ def _invoice_lines(lines: list[InvoiceLine], chart, vat_codes, side: Side) -> tu
                 "description": line.description,
                 "amount": line.amount,
                 "vat_code": code,
-                "vat_percentage": vat["Percentage"] if vat else None,
+                "vat_rate": _rate(vat) if vat else None,
                 "vat_amount": vat_amount,
             }
         )
@@ -247,7 +256,17 @@ def register(tool, get_client) -> None:
         client = await get_client()
         return await client.list(
             "documents/Documents",
-            select=["ID", "Subject", "DocumentDate", "Account", "AccountName", "AmountFC", "Currency", "Created"],
+            select=[
+                "ID",
+                "Subject",
+                "TypeDescription",
+                "DocumentDate",
+                "Account",
+                "AccountName",
+                "AmountFC",
+                "Currency",
+                "Created",
+            ],
             filters=filters,
             orderby="DocumentDate",
             limit=limit,
@@ -375,7 +394,7 @@ def register(tool, get_client) -> None:
         client = await get_client()
         div = await client.division(division)
         party = odata.parse_guid(party_id)
-        journal = await _journal(client, div, journal_code, side.journal_type)
+        journal = (await _journal(client, div, journal_code, side.journal_type))["Code"]
         payload, preview = _invoice_lines(lines, await _chart(client, div), await _vat_codes(client, div), side)
         totals = _totals(preview)
         if expected_total is not None and abs(totals["total"] - expected_total) > CENT:
@@ -400,7 +419,9 @@ def register(tool, get_client) -> None:
         body = {
             "Journal": journal,
             side.party: party,
-            "EntryDate": invoice_date.isoformat(),
+            "EntryDate": odata.post_date(invoice_date),
+            # Set rather than left to Exact: its docs don't say it tells a credit note by its sign.
+            "Type": side.credit_note_type if totals["net"] < 0 else side.invoice_type,
             **{key: value for key, value in header.items() if value is not None},
             side.lines: payload,
         }
@@ -451,7 +472,7 @@ def register(tool, get_client) -> None:
             lines,
             {
                 "YourRef": supplier_invoice_number,
-                "DueDate": due_date.isoformat() if due_date else None,
+                "DueDate": odata.post_date(due_date) if due_date else None,
                 "Description": description or supplier_invoice_number,
                 "Currency": currency,
                 "PaymentReference": payment_reference,
@@ -510,7 +531,7 @@ def register(tool, get_client) -> None:
             {
                 "InvoiceNumber": invoice_number,
                 "YourRef": reference,
-                "DueDate": due_date.isoformat() if due_date else None,
+                "DueDate": odata.post_date(due_date) if due_date else None,
                 "Description": description,
                 "Currency": currency,
                 "PaymentReference": payment_reference,
@@ -545,7 +566,8 @@ def register(tool, get_client) -> None:
             raise ValueError(f"The lines add up to {total:.2f}, not zero: debit and credit must balance.")
         client = await get_client()
         div = await client.division(division)
-        journal = await _journal(client, div, journal_code, "general")
+        journal_row = await _journal(client, div, journal_code, "general")
+        journal = journal_row["Code"]
         periods = await client.list(
             "financial/FinancialPeriods",
             select=["FinYear", "FinPeriod"],
@@ -564,6 +586,14 @@ def register(tool, get_client) -> None:
             account = _gl_account(chart, line.gl_account_code, CASH_TYPES)
             if account["Type"] in OPEN_ITEM_TYPES and not line.account_id:
                 raise ValueError(f"GL account {account['Code']} holds open items, so its line needs an account_id.")
+            if journal_row["AllowVAT"] and account["VATCode"]:
+                # A VAT journal applies the account's default VAT code to a line without one, which
+                # would add VAT the lines don't balance for.
+                raise ValueError(
+                    f"Journal {journal} books VAT, and GL account {account['Code']} has VAT code "
+                    f"{account['VATCode']}, so Exact would add VAT to the line. Use a general journal "
+                    "without VAT, or book it as an invoice."
+                )
             optional = {
                 "Account": odata.parse_guid(line.account_id) if line.account_id else None,
                 "CostCenter": line.cost_center,
@@ -574,7 +604,7 @@ def register(tool, get_client) -> None:
                 {
                     "GLAccount": account["ID"],
                     "AmountFC": line.amount,
-                    "Date": entry_date.isoformat(),
+                    "Date": odata.post_date(entry_date),
                     "Description": line.description or description,
                     **{key: value for key, value in optional.items() if value is not None},
                 }
@@ -696,11 +726,22 @@ def register(tool, get_client) -> None:
             raise ValueError(f"The file is {len(data):,} bytes; at most {MAX_ATTACHMENT_BYTES:,} can be uploaded here.")
         client = await get_client()
         div = await client.division(division)
+        types = await client.list(
+            "documents/DocumentTypes",
+            select=["ID", "Description", "DocumentIsCreatable"],
+            filters=[f"ID eq {DOCUMENT_TYPES[kind]}"],
+            limit=1,
+            division=div,
+        )
+        if not types or not types[0]["DocumentIsCreatable"]:
+            raise ValueError(
+                f"Exact has no document type {DOCUMENT_TYPES[kind]} that can be created for a {kind.replace('_', ' ')}."
+            )
         fields = {
             "Subject": subject or file_name,
             "Type": DOCUMENT_TYPES[kind],
             "Account": odata.parse_guid(account_id) if account_id else None,
-            "DocumentDate": document_date.isoformat() if document_date else None,
+            "DocumentDate": odata.post_date(document_date) if document_date else None,
         }
         document = await client.create(
             "documents/Documents", {key: value for key, value in fields.items() if value is not None}, div
@@ -713,7 +754,12 @@ def register(tool, get_client) -> None:
             )
         except ExactError as err:
             raise ExactError(f"Document {document['ID']} was made, but its file wasn't added: {err}") from err
-        return {"document_id": document["ID"], "attachment_id": attachment.get("ID"), "bytes": len(data)}
+        return {
+            "document_id": document["ID"],
+            "attachment_id": attachment.get("ID"),
+            "type": types[0]["Description"],
+            "bytes": len(data),
+        }
 
     @tool
     async def reconciliation_suggestions(
