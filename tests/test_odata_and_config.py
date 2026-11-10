@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 
 from exact_mcp import odata
-from exact_mcp.config import TOOLSETS, ConfigError, load_settings, toolsets_from
+from exact_mcp.config import ConfigError, load_settings
 
 from .conftest import ENV
 
@@ -60,18 +60,6 @@ def test_invalid_settings_are_rejected(override, message):
 
 def test_uk_region_host():
     assert load_settings({**ENV, "EXACT_REGION": "UK"}).base_url == "https://start.exactonline.co.uk"
-
-
-def test_toolsets_are_off_by_default_and_all_leaves_out_the_ones_that_write():
-    assert toolsets_from({}) == set()
-    assert toolsets_from({"EXACT_TOOLSETS": " Orders, crm ,"}) == {"orders", "crm"}
-    assert toolsets_from({"EXACT_TOOLSETS": "all"}) == set(TOOLSETS) - {"bookkeeping"}
-    assert toolsets_from({"EXACT_TOOLSETS": "all,bookkeeping"}) == set(TOOLSETS)
-
-
-def test_an_unknown_toolset_is_named():
-    with pytest.raises(ConfigError, match="EXACT_TOOLSETS can name .* got payroll"):
-        toolsets_from({"EXACT_TOOLSETS": "orders,payroll"})
 
 
 EDMX = """<?xml version="1.0" encoding="utf-8"?>

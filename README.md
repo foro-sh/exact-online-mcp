@@ -5,9 +5,9 @@ to deploy on [foro.sh](https://foro.sh). It lets an agent work with customers an
 sales and purchase invoices, open receivables and payables, the general ledger and bank
 transactions, profit and loss, revenue, VAT returns, sales orders and items.
 
-It only reads, unless the `bookkeeping` toolset is switched on. That toolset lets the agent do the
-bookkeeping: book purchase and sales invoices and journal entries, add suppliers and customers,
-store invoice files, and match payments to the invoices they settle.
+It can also book: purchase and sales invoices and journal entries, new suppliers and customers,
+invoice files, and matches of payments to the invoices they settle. Every tool is marked read or
+write, and the foro project policy decides which an agent may call.
 
 ## Tools
 
@@ -40,14 +40,14 @@ store invoice files, and match payments to the invoices they settle.
 Every tool takes an optional `division`. Without it, the server uses `EXACT_DIVISION`, or else
 the user's current division in Exact.
 
-### Toolsets
+### More tools
 
-The tools above are always on. These groups stay off until `EXACT_TOOLSETS` on the project's Env
-tab names them, such as `orders,projects`, or `all`. `all` leaves out `bookkeeping`, the only
-toolset that writes, so it has to be named: `all,bookkeeping`. Most need a module that only some
-Exact packages have.
+These are listed too. Most need a module that only some Exact packages have. In `bookkeeping`,
+`book_purchase_invoice`, `book_sales_invoice`, `book_journal_entry`, `create_account`,
+`upload_document` and `match_open_items` write; `unbooked_documents`, `suggest_booking` and
+`reconciliation_suggestions` only read. `EXACT_TOOLSETS` is not used.
 
-| Toolset | Tools | Needs |
+| Group | Tools | Needs |
 | --- | --- | --- |
 | `orders` | `get_sales_order`, `search_purchase_orders`, `stock_levels` | Wholesale & Distribution or Manufacturing; stock from Plus up |
 | `projects` | `search_projects`, `project_hours`, `project_result`, `upcoming_project_billing` | The project module |
@@ -81,8 +81,7 @@ identifies a person, names a user or holds a file (see `exact_mcp/scope.py`).
 | `match_open_items` | Matches such a set in Exact, so the invoice and its payment are no longer open |
 
 It also adds two prompts that walk an agent through the usual work: `book_purchase_invoices`
-and `reconcile_open_items`. The first reads each invoice's file with `get_document`, so switch on
-`documents,bookkeeping` together.
+and `reconcile_open_items`. The first reads each invoice's file with `get_document`.
 
 What keeps it from booking something wrong:
 
@@ -150,8 +149,8 @@ You connect it once from the foro dashboard, and from then on foro refreshes it.
 *Manage* → *Apps*, register an app for your region with redirect URI
 `https://foro.sh/api/upstream-grants/callback`. Note the client ID and secret. An app
 registered here has no rights of its own: its token can do whatever the Exact user who connects
-it in step 3 may do. For the `bookkeeping` toolset, that user's roles in Exact must allow booking
-entries and adding accounts and documents in the division.
+it in step 3 may do. To book, that user's roles in Exact must allow booking entries and adding
+accounts and documents in the division.
 
 **2. Add the secrets on foro.** In the project's Env tab:
 

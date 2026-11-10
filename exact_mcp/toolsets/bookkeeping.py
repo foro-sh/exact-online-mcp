@@ -1,6 +1,6 @@
 """Booking in Exact: purchase and sales invoices, journal entries, new customers and suppliers,
-documents, and matching open items. The only toolset that writes, so EXACT_TOOLSETS has to name
-it; `all` leaves it out."""
+documents, and matching open items. The only tools that write. The reads in this module stay
+read-only, so a foro project policy can allow them and keep the writes off."""
 
 import base64
 import binascii

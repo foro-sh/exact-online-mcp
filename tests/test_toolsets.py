@@ -6,7 +6,7 @@ import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 
-from exact_mcp import config, toolsets
+from exact_mcp import toolsets
 from exact_mcp.app import create_server
 
 from .conftest import odata
@@ -34,32 +34,20 @@ async def tool_names(mcp) -> set[str]:
         return {tool.name for tool in await session.list_tools()}
 
 
-async def test_only_the_core_tools_are_on_by_default(monkeypatch):
+async def test_every_tool_is_listed_without_an_env_var(monkeypatch):
     monkeypatch.delenv("EXACT_TOOLSETS", raising=False)
-    assert len(await tool_names(create_server())) == 28
-
-
-async def test_exact_toolsets_switches_on_the_toolsets_it_names(monkeypatch):
-    monkeypatch.setenv("EXACT_TOOLSETS", "orders,crm")
-
-    listed = await tool_names(create_server())
-
-    assert {"get_sales_order", "stock_levels", "list_contacts"} <= listed
-    assert "project_hours" not in listed
-    assert len(listed) == 28 + 3 + 3
-
-
-async def test_all_switches_every_read_toolset_on(monkeypatch):
-    monkeypatch.setenv("EXACT_TOOLSETS", "all")
-    listed = await tool_names(create_server())
-    assert len(listed) == 28 + 16
-    assert "book_purchase_invoice" not in listed
+    server = create_server()
+    listed = await tool_names(server)
+    assert len(listed) == 28 + 16 + 9
+    assert "book_purchase_invoice" in listed
+    assert "dry_run" in server.instructions
+    async with Client(server) as mcp:
+        assert {p.name for p in await mcp.list_prompts()} == {"book_purchase_invoices", "reconcile_open_items"}
 
 
 async def test_every_toolset_is_known_and_only_bookkeeping_writes(server):
     async with Client(server) as mcp:
         listed = await mcp.list_tools()
-    assert set(toolsets.MODULES) == set(config.TOOLSETS)
     writes = {t.name for t in listed if not t.annotations.read_only_hint}
     assert {t.name for t in listed if "bookkeeping" in t.meta["fastmcp"]["tags"]} > writes
     assert writes == {

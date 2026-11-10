@@ -266,8 +266,8 @@ WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent
 
 
 def toolset_tools(mcp: FastMCP, toolset: str) -> Callable:
-    """A decorator that registers a tool in `toolset`, the tag EXACT_TOOLSETS switches tools on
-    by. Tools are read-only unless registered with `@tool(writes=True)`."""
+    """A decorator that registers a tool tagged `toolset`. Read-only unless `@tool(writes=True)`,
+    which is what a foro project policy uses to tell a write from a read."""
 
     def register_tool(fn, writes: bool):
         @functools.wraps(fn)

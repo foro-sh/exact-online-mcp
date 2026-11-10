@@ -3,11 +3,10 @@ import json
 
 import httpx
 import pytest
-from fastmcp import Client, FastMCP
+from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
 from exact_mcp import matching, toolsets
-from exact_mcp.app import create_server
 
 from .conftest import odata
 from .test_tools import ACCOUNT_ID, call
@@ -705,18 +704,3 @@ async def test_exact_refusing_the_match_is_a_tool_error(server, exact):
 
     with pytest.raises(ToolError, match="didn't match the items: Entry is already matched"):
         await call(server, "match_open_items", MATCH)
-
-
-async def test_bookkeeping_only_shows_when_named(monkeypatch):
-    monkeypatch.setenv("EXACT_TOOLSETS", "bookkeeping")
-
-    server = create_server()
-    assert "bookkeeping toolset is on" in server.instructions
-    async with Client(server) as mcp:
-        assert {p.name for p in await mcp.list_prompts()} == {"book_purchase_invoices", "reconcile_open_items"}
-
-    monkeypatch.setenv("EXACT_TOOLSETS", "all")
-    server = create_server()
-    assert "bookkeeping" not in server.instructions
-    async with Client(server) as mcp:
-        assert await mcp.list_prompts() == []
