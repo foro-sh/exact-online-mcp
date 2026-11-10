@@ -62,10 +62,11 @@ def test_uk_region_host():
     assert load_settings({**ENV, "EXACT_REGION": "UK"}).base_url == "https://start.exactonline.co.uk"
 
 
-def test_toolsets_are_off_by_default_and_all_switches_every_one_on():
+def test_toolsets_are_off_by_default_and_all_leaves_out_the_ones_that_write():
     assert toolsets_from({}) == set()
     assert toolsets_from({"EXACT_TOOLSETS": " Orders, crm ,"}) == {"orders", "crm"}
-    assert toolsets_from({"EXACT_TOOLSETS": "all"}) == set(TOOLSETS)
+    assert toolsets_from({"EXACT_TOOLSETS": "all"}) == set(TOOLSETS) - {"bookkeeping"}
+    assert toolsets_from({"EXACT_TOOLSETS": "all,bookkeeping"}) == set(TOOLSETS)
 
 
 def test_an_unknown_toolset_is_named():

@@ -17,7 +17,9 @@ GRANT_NAME = "exact"
 
 # Groups of tools beyond the core ones, switched on with EXACT_TOOLSETS. Most need a module that
 # only some Exact packages have.
-TOOLSETS = ("orders", "projects", "crm", "subscriptions", "documents", "changes", "query")
+TOOLSETS = ("orders", "projects", "crm", "subscriptions", "documents", "changes", "query", "bookkeeping")
+# Toolsets that change the books. `all` leaves them out: writing has to be asked for by name.
+WRITE_TOOLSETS = ("bookkeeping",)
 
 # foro injects both into every container it deploys.
 REQUIRED = ("FORO_UPSTREAM_BROKER_URL", "FORO_UPSTREAM_BROKER_TOKEN")
@@ -40,10 +42,10 @@ def region_from(env: dict[str, str]) -> str:
 
 def toolsets_from(env: dict[str, str]) -> set[str]:
     names = {name.strip().lower() for name in env.get("EXACT_TOOLSETS", "").split(",") if name.strip()}
-    if "all" in names:
-        return set(TOOLSETS)
-    if unknown := names - set(TOOLSETS):
+    if unknown := names - {*TOOLSETS, "all"}:
         raise ConfigError(f"EXACT_TOOLSETS can name {', '.join(TOOLSETS)} or all, got {', '.join(sorted(unknown))}")
+    if "all" in names:
+        names = (names - {"all"}) | (set(TOOLSETS) - set(WRITE_TOOLSETS))
     return names
 
 

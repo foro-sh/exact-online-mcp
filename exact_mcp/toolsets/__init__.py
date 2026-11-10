@@ -5,8 +5,8 @@ from collections.abc import Awaitable, Callable
 from fastmcp import FastMCP
 
 from ..client import ExactClient
-from ..tools import read_only_tools
-from . import changes, crm, documents, orders, projects, query, subscriptions
+from ..tools import toolset_tools
+from . import bookkeeping, changes, crm, documents, orders, projects, query, subscriptions
 
 MODULES = {
     "orders": orders,
@@ -16,9 +16,11 @@ MODULES = {
     "documents": documents,
     "changes": changes,
     "query": query,
+    "bookkeeping": bookkeeping,
 }
 
 
 def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> None:
     for name, module in MODULES.items():
-        module.register(read_only_tools(mcp, name), get_client)
+        module.register(toolset_tools(mcp, name), get_client)
+    bookkeeping.register_prompts(mcp)

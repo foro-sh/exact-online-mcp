@@ -36,7 +36,7 @@ async def tool_names(mcp) -> set[str]:
 
 async def test_only_the_core_tools_are_on_by_default(monkeypatch):
     monkeypatch.delenv("EXACT_TOOLSETS", raising=False)
-    assert len(await tool_names(create_server())) == 26
+    assert len(await tool_names(create_server())) == 28
 
 
 async def test_exact_toolsets_switches_on_the_toolsets_it_names(monkeypatch):
@@ -46,20 +46,31 @@ async def test_exact_toolsets_switches_on_the_toolsets_it_names(monkeypatch):
 
     assert {"get_sales_order", "stock_levels", "list_contacts"} <= listed
     assert "project_hours" not in listed
-    assert len(listed) == 26 + 3 + 3
+    assert len(listed) == 28 + 3 + 3
 
 
-async def test_all_switches_every_toolset_on(monkeypatch):
+async def test_all_switches_every_read_toolset_on(monkeypatch):
     monkeypatch.setenv("EXACT_TOOLSETS", "all")
-    assert len(await tool_names(create_server())) == 26 + 16
+    listed = await tool_names(create_server())
+    assert len(listed) == 28 + 16
+    assert "book_purchase_invoice" not in listed
 
 
-async def test_every_toolset_is_known_and_read_only(server):
+async def test_every_toolset_is_known_and_only_bookkeeping_writes(server):
     async with Client(server) as mcp:
         listed = await mcp.list_tools()
     assert set(toolsets.MODULES) == set(config.TOOLSETS)
-    assert len(listed) == 16
-    assert all(t.annotations.read_only_hint for t in listed)
+    writes = {t.name for t in listed if not t.annotations.read_only_hint}
+    assert {t.name for t in listed if "bookkeeping" in t.meta["fastmcp"]["tags"]} > writes
+    assert writes == {
+        "book_purchase_invoice",
+        "book_sales_invoice",
+        "book_journal_entry",
+        "create_account",
+        "upload_document",
+        "match_open_items",
+    }
+    assert len(listed) == 16 + 9
 
 
 async def test_get_sales_order_adds_its_lines(server, exact):

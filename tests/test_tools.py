@@ -34,7 +34,7 @@ async def call(server, name, args=None):
 async def test_every_tool_is_read_only(server):
     async with Client(server) as mcp:
         listed = await mcp.list_tools()
-    assert len(listed) == 26
+    assert len(listed) == 28
     assert all(t.annotations.read_only_hint for t in listed)
 
 
@@ -400,6 +400,25 @@ async def test_unconfigured_server_answers_with_setup_instructions(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
     async with Client(create_server()) as mcp:
-        assert len(await mcp.list_tools()) == 26
+        assert len(await mcp.list_tools()) == 28
         with pytest.raises(ToolError, match="foro's upstream broker.*FORO_UPSTREAM_BROKER_URL"):
             await mcp.call_tool("list_divisions", {})
+
+
+async def test_list_journals_names_each_type(server, exact):
+    exact.handler = lambda r: httpx.Response(200, json=odata([{"Code": "20", "Type": 12}, {"Code": "X", "Type": 99}]))
+
+    rows = (await call(server, "list_journals", {"type": "bank"}))["result"]
+
+    assert [row["TypeDescription"] for row in rows] == ["bank", "99"]
+    assert exact.requests[0].url.params["$filter"] == "Type eq 12"
+
+
+async def test_list_vat_codes_for_purchases_includes_codes_for_both(server, exact):
+    exact.handler = lambda r: httpx.Response(200, json=odata([]))
+
+    await call(server, "list_vat_codes", {"use": "purchase"})
+
+    assert exact.requests[0].url.params["$filter"] == (
+        "IsBlocked eq false and (VATTransactionType eq 'P' or VATTransactionType eq 'B')"
+    )
