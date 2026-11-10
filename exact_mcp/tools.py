@@ -50,6 +50,9 @@ RETURN_STATUS = {
     50: "Processed",
 }
 
+JOURNAL_TYPES = {"cash": 10, "bank": 12, "payment_service": 16, "sales": 20, "purchase": 22, "general": 90}
+VAT_CODE_FIELDS = ["Code", "Description", "Percentage", "Type", "VATTransactionType", "Charged", "IsBlocked"]
+
 ACCOUNT_FIELDS = ["ID", "Code", "Name", "City", "Country", "Email", "Phone", "IsSales", "IsSupplier"]
 OPEN_ITEM_FIELDS = [
     "AccountId",
@@ -257,11 +260,16 @@ async def _balances(client, division, which, year, period, filters=()) -> list[d
     return lines
 
 
-def read_only_tools(mcp: FastMCP, toolset: str) -> Callable:
-    """A decorator that registers a read-only tool in `toolset`, the tag EXACT_TOOLSETS switches
-    tools on by."""
+READ = ToolAnnotations(read_only_hint=True, open_world_hint=True)
+# Writes only add records (an entry, an account, a match), never change or delete one.
+WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True)
 
-    def tool(fn):
+
+def toolset_tools(mcp: FastMCP, toolset: str) -> Callable:
+    """A decorator that registers a tool in `toolset`, the tag EXACT_TOOLSETS switches tools on
+    by. Tools are read-only unless registered with `@tool(writes=True)`."""
+
+    def register_tool(fn, writes: bool):
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
             try:
@@ -269,14 +277,18 @@ def read_only_tools(mcp: FastMCP, toolset: str) -> Callable:
             except _USER_ERRORS as err:
                 raise ToolError(str(err)) from err
 
-        annotations = ToolAnnotations(read_only_hint=True, open_world_hint=True)
-        return mcp.tool(tags={toolset}, annotations=annotations)(wrapper)
+        return mcp.tool(tags={toolset}, annotations=WRITE if writes else READ)(wrapper)
+
+    def tool(fn=None, *, writes: bool = False):
+        if fn is None:
+            return lambda fn: register_tool(fn, writes)
+        return register_tool(fn, writes)
 
     return tool
 
 
 def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> None:
-    tool = read_only_tools(mcp, "core")
+    tool = toolset_tools(mcp, "core")
 
     @tool
     async def list_divisions() -> dict:
@@ -964,6 +976,55 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
             select=["FinYear", "FinPeriod", "StartDate", "EndDate"],
             filters=[f"FinYear eq {year}"] if year is not None else [],
             orderby="FinYear,FinPeriod",
+            limit=1000,
+            division=division,
+        )
+
+    @tool
+    async def list_journals(
+        type: Annotated[
+            Literal["cash", "bank", "payment_service", "sales", "purchase", "general"] | None,
+            Field(description="Only journals of this type."),
+        ] = None,
+        division: Division = None,
+    ) -> list[dict]:
+        """The journals entries are booked in, with their code and type. A bank or cash journal's
+        GLAccountCode is the GL account its money is on, and other journals' is their suspense
+        account."""
+        client = await get_client()
+        rows = await client.list(
+            "financial/Journals",
+            select=["Code", "Description", "Type", "Currency", "GLAccountCode", "BankAccountIBAN", "IsBlocked"],
+            filters=[f"Type eq {JOURNAL_TYPES[type]}"] if type else [],
+            orderby="Code",
+            limit=1000,
+            division=division,
+        )
+        names = {code: name for name, code in JOURNAL_TYPES.items()}
+        for row in rows:
+            row["TypeDescription"] = names.get(row["Type"], str(row["Type"]))
+        return rows
+
+    @tool
+    async def list_vat_codes(
+        use: Annotated[
+            Literal["sales", "purchase"] | None, Field(description="Only codes that can be used for this.")
+        ] = None,
+        include_blocked: bool = False,
+        division: Division = None,
+    ) -> list[dict]:
+        """VAT codes with their percentage (a fraction, so 0.21 is 21%) and Type: E is excluding VAT,
+        I including, B 0% with only the base reported and N no VAT. VATTransactionType says what a
+        code may be used for: S sales, P purchase, B both."""
+        filters = [] if include_blocked else ["IsBlocked eq false"]
+        if use:
+            filters.append(f"(VATTransactionType eq '{use[0].upper()}' or VATTransactionType eq 'B')")
+        client = await get_client()
+        return await client.list(
+            "vat/VATCodes",
+            select=VAT_CODE_FIELDS,
+            filters=filters,
+            orderby="Code",
             limit=1000,
             division=division,
         )

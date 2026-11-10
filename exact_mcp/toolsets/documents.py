@@ -1,6 +1,5 @@
 """Documents in Exact, such as scanned purchase invoices, and their files."""
 
-import base64
 import mimetypes
 from datetime import date
 from typing import Annotated
@@ -88,12 +87,8 @@ def register(tool, get_client) -> None:
             raise ToolError(f"Document {document_id} has no attachments in this division.")
         if sum(row["FileSize"] or 0 for row in attachments) > MAX_ATTACHMENT_BYTES:
             return [{"attachments": attachments, "note": "Too large to read here; open the Url in Exact."}]
-        # A second call, so the size is known before the files come.
-        contents = await client.list(
-            "documents/DocumentAttachments", select=["ID", "Attachment"], filters=filters, limit=50, division=div
-        )
-        data = {row["ID"]: base64.b64decode(row["Attachment"] or "") for row in contents}
+        # The listing's Attachment field comes back empty, so each file is fetched from its Url.
         return [
             {"attachments": attachments},
-            *(_file(row["FileName"] or "attachment", data.get(row["ID"], b"")) for row in attachments),
+            *[_file(row["FileName"] or "attachment", await client.download(row["Url"])) for row in attachments],
         ]

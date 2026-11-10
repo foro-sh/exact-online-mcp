@@ -22,15 +22,23 @@ class RateLimitedError(ExactError):
     pass
 
 
-def _error_message(response: httpx.Response) -> str:
+def _json_message(response: httpx.Response) -> str | None:
     try:
         return response.json()["error"]["message"]["value"]
     except (ValueError, KeyError, TypeError):
-        return response.text[:300] or response.reason_phrase
+        return None
 
 
 def _http_error(response: httpx.Response) -> ExactError:
-    message = f"Exact Online returned {response.status_code}: {_error_message(response)}"
+    reason = _json_message(response)
+    if response.status_code == 500 and reason:
+        # Exact answers a record it won't accept with a 500 and says why, so it's no outage.
+        return ExactError(f"Exact Online refused it: {reason}")
+    text = reason or response.text[:300] or response.reason_phrase
+    parts = response.url.path.split("/")
+    if response.status_code == 403 and "WrongDivision" in text and parts[1:3] == ["api", "v1"]:
+        return ExactError(f"This connection can't use division {parts[3]}; see list_divisions for the ones it can.")
+    message = f"Exact Online returned {response.status_code}: {text}"
     if response.status_code == 403:
         # A valid token is still refused for parts of Exact the company's package, the app's scopes
         # or the user's rights don't cover, so say which endpoint it was.
@@ -115,13 +123,61 @@ class ExactClient:
             url, params = data.get("__next"), None
         return rows[:limit]
 
+    async def download(self, url: str) -> bytes:
+        """The file behind an Exact URL, such as a document attachment's `Url`. Only Exact's own
+        host gets the access token."""
+        target, base = httpx.URL(url), httpx.URL(self._base_url)
+        if (target.scheme, target.host) != (base.scheme, base.host):
+            raise ExactError(f"Not downloading {url}: it isn't on {self._base_url}.")
+        return (await self._get(url, None, accept="*/*")).content
+
+    async def create(self, resource: str, body: dict, division: int | None = None) -> dict:
+        """POST a new record to `resource`, such as `purchaseentry/PurchaseEntries` with its lines,
+        and return the record Exact made."""
+        url = f"{self._base_url}/api/v1/{await self.division(division)}/{resource}"
+        response = await self._write(url, json=body)
+        return odata.clean(response.json()["d"])
+
+    async def upload_xml(self, topic: str, xml: str, division: int | None = None) -> str:
+        """POST an eExact document to the XML API, for what REST can't do, such as `MatchSets`.
+        Exact answers 200 either way, with a Message per record saying how it went."""
+        url = f"{self._base_url}/docs/XMLUpload.aspx"
+        params = {"Topic": topic, "_Division_": str(await self.division(division))}
+        response = await self._write(url, params=params, content=xml.encode(), content_type="application/xml")
+        return response.text
+
+    async def _write(self, url: str, **kwargs) -> httpx.Response:
+        try:
+            return await self._send("POST", url, **kwargs)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as err:
+            raise ExactError("Couldn't reach Exact Online, so nothing was sent; try again.") from err
+        except httpx.TransportError as err:
+            # The request may have reached Exact, which may have booked it, and a retry would book it twice.
+            raise ExactError(
+                "Exact Online didn't answer in time, so this may or may not have been booked. Look it up"
+                " before trying again."
+            ) from err
+
     async def _get(self, url: str, params: dict[str, str] | None, accept: str = "application/json") -> httpx.Response:
+        return await self._send("GET", url, params=params, accept=accept)
+
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        json: dict | None = None,
+        content: bytes | None = None,
+        content_type: str | None = None,
+        accept: str = "application/json",
+    ) -> httpx.Response:
+        # Retrying is safe for writes too: Exact refused the request, so nothing was booked.
         for attempt in range(2):
-            response = await self._http.get(
-                url,
-                params=params,
-                headers={"Authorization": f"Bearer {await self._tokens.access_token()}", "Accept": accept},
-            )
+            headers = {"Authorization": f"Bearer {await self._tokens.access_token()}", "Accept": accept}
+            if content_type:
+                headers["Content-Type"] = content_type
+            response = await self._http.request(method, url, params=params, json=json, content=content, headers=headers)
             retry = attempt == 0
             if response.status_code == 401 and retry:
                 # The cached token may have been revoked early; fetch it again once.

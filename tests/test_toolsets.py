@@ -36,7 +36,7 @@ async def tool_names(mcp) -> set[str]:
 
 async def test_only_the_core_tools_are_on_by_default(monkeypatch):
     monkeypatch.delenv("EXACT_TOOLSETS", raising=False)
-    assert len(await tool_names(create_server())) == 26
+    assert len(await tool_names(create_server())) == 28
 
 
 async def test_exact_toolsets_switches_on_the_toolsets_it_names(monkeypatch):
@@ -46,20 +46,31 @@ async def test_exact_toolsets_switches_on_the_toolsets_it_names(monkeypatch):
 
     assert {"get_sales_order", "stock_levels", "list_contacts"} <= listed
     assert "project_hours" not in listed
-    assert len(listed) == 26 + 3 + 3
+    assert len(listed) == 28 + 3 + 3
 
 
-async def test_all_switches_every_toolset_on(monkeypatch):
+async def test_all_switches_every_read_toolset_on(monkeypatch):
     monkeypatch.setenv("EXACT_TOOLSETS", "all")
-    assert len(await tool_names(create_server())) == 26 + 16
+    listed = await tool_names(create_server())
+    assert len(listed) == 28 + 16
+    assert "book_purchase_invoice" not in listed
 
 
-async def test_every_toolset_is_known_and_read_only(server):
+async def test_every_toolset_is_known_and_only_bookkeeping_writes(server):
     async with Client(server) as mcp:
         listed = await mcp.list_tools()
     assert set(toolsets.MODULES) == set(config.TOOLSETS)
-    assert len(listed) == 16
-    assert all(t.annotations.read_only_hint for t in listed)
+    writes = {t.name for t in listed if not t.annotations.read_only_hint}
+    assert {t.name for t in listed if "bookkeeping" in t.meta["fastmcp"]["tags"]} > writes
+    assert writes == {
+        "book_purchase_invoice",
+        "book_sales_invoice",
+        "book_journal_entry",
+        "create_account",
+        "upload_document",
+        "match_open_items",
+    }
+    assert len(listed) == 16 + 9
 
 
 async def test_get_sales_order_adds_its_lines(server, exact):
@@ -254,14 +265,17 @@ async def test_search_documents_filters_by_booked_invoice_and_subject(server, ex
     )
 
 
+ATTACHMENT_URL = "https://start.exactonline.nl/docs/SysAttachment.aspx?ID=a1&_Division_=1"
+
+
 async def test_get_document_returns_its_attachment_as_a_file(server, exact):
     pdf = b"%PDF-1.7 test"
 
     def handler(request):
-        if "Attachment" in request.url.params["$select"].split(","):
-            return httpx.Response(200, json=odata([{"ID": "a1", "Attachment": base64.b64encode(pdf).decode()}]))
+        if request.url.path == "/docs/SysAttachment.aspx":
+            return httpx.Response(200, content=pdf)
         return httpx.Response(
-            200, json=odata([{"ID": "a1", "FileName": "invoice.pdf", "FileSize": len(pdf), "Url": "https://x"}])
+            200, json=odata([{"ID": "a1", "FileName": "invoice.pdf", "FileSize": len(pdf), "Url": ATTACHMENT_URL}])
         )
 
     exact.handler = handler
@@ -274,6 +288,18 @@ async def test_get_document_returns_its_attachment_as_a_file(server, exact):
     assert file.resource.mime_type == "application/pdf"
     assert base64.b64decode(file.resource.blob) == pdf
     assert exact.requests[0].url.params["$filter"] == f"Document eq guid'{DOCUMENT_ID}'"
+    assert exact.requests[1].headers["Authorization"].startswith("Bearer ")
+
+
+async def test_get_document_sends_the_token_only_to_exact(server, exact):
+    url = "https://elsewhere.example/file.pdf"
+    exact.handler = lambda r: httpx.Response(
+        200, json=odata([{"ID": "a1", "FileName": "x.pdf", "FileSize": 1, "Url": url}])
+    )
+
+    with pytest.raises(ToolError, match="Not downloading"):
+        await call(server, "get_document", {"document_id": DOCUMENT_ID})
+    assert len(exact.requests) == 1
 
 
 async def test_recent_changes_counts_lines_per_journal_and_deletions_per_kind(server, exact):
@@ -326,7 +352,11 @@ async def test_query_refuses_payroll_and_identity_fields_before_calling_exact(se
         with pytest.raises(ToolError, match="doesn't read payroll"):
             await mcp.call_tool("query", {"resource": "payroll/Employees", "select": ["ID"]})
         with pytest.raises(ToolError, match="identify people"):
-            await mcp.call_tool("query", {"resource": "crm/Contacts", "select": ["FullName", "BirthDate"]})
+            await mcp.call_tool("query", {"resource": "crm/Accounts", "select": ["Name", "PictureThumbnailUrl"]})
+        with pytest.raises(ToolError, match="doesn't read contact people"):
+            await mcp.call_tool("query", {"resource": "crm/Contacts", "select": ["FullName", "Mobile"]})
+        with pytest.raises(ToolError, match="doesn't read contact people"):
+            await mcp.call_tool("describe_resource", {"resource": "sync/CRM/Contacts"})
     assert exact.requests == []
 
 

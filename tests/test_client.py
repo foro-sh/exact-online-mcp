@@ -133,6 +133,21 @@ async def test_exact_error_message_is_surfaced(client, exact):
         await client.list("crm/Accounts", select=["Nope"], limit=1)
 
 
+async def test_a_record_exact_refuses_reads_as_a_refusal_not_an_outage(client, exact):
+    exact.handler = lambda r: httpx.Response(
+        500, json={"error": {"code": "", "message": {"lang": "", "value": "Ongeldige referentie: Leverancier"}}}
+    )
+    with pytest.raises(ExactError, match="^Exact Online refused it: Ongeldige referentie: Leverancier$"):
+        await client.create("purchaseentry/PurchaseEntries", {})
+
+
+async def test_a_division_the_user_cant_use_points_to_list_divisions(client, exact):
+    exact.handler = lambda r: httpx.Response(403, text="Forbidden - WrongDivision")
+
+    with pytest.raises(ExactError, match="can't use division 7; see list_divisions"):
+        await client.list("financial/Journals", select=["Code"], limit=1, division=7)
+
+
 async def test_forbidden_names_the_endpoint_and_the_likely_causes(client, exact):
     exact.handler = lambda r: httpx.Response(403, text="Forbidden")
 
@@ -172,3 +187,74 @@ async def test_metadata_asks_for_the_services_edmx(client, exact):
     assert await client.metadata("read/financial") == "<edmx:Edmx/>"
     assert exact.requests[0].url.path == "/api/v1/123/read/financial/$metadata"
     assert exact.requests[0].headers["Accept"] == "application/xml"
+
+
+async def test_create_posts_json_and_returns_the_clean_record(client, exact):
+    exact.handler = lambda r: httpx.Response(201, json={"d": {"__metadata": {}, "EntryID": "e1", "YourRef": " A "}})
+
+    record = await client.create("purchaseentry/PurchaseEntries", {"Journal": "60"})
+
+    request = exact.requests[0]
+    assert record == {"EntryID": "e1", "YourRef": "A"}
+    assert request.method == "POST"
+    assert request.url.path == "/api/v1/123/purchaseentry/PurchaseEntries"
+    assert request.read() == b'{"Journal":"60"}'
+
+
+async def test_a_write_refused_for_the_rate_limit_is_sent_again(client, exact, sleeps):
+    answers = iter(
+        [httpx.Response(429, headers={"X-RateLimit-Remaining": "4000"}), httpx.Response(201, json={"d": {}})]
+    )
+    exact.handler = lambda r: next(answers)
+
+    await client.create("crm/Accounts", {"Name": "Acme"})
+
+    assert [r.method for r in exact.requests] == ["POST", "POST"]
+    assert sleeps == [61.0]
+
+
+@pytest.mark.parametrize("error", [httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.ReadError])
+async def test_a_write_lost_on_the_way_back_is_not_sent_again(client, exact, error):
+    def lost(request):
+        raise error("gone", request=request)
+
+    exact.handler = lost
+
+    with pytest.raises(ExactError, match="may or may not have been booked"):
+        await client.create("purchaseentry/PurchaseEntries", {"Journal": "60"})
+    assert len(exact.requests) == 1
+
+
+async def test_a_write_that_never_reached_exact_says_nothing_was_sent(client, exact):
+    def refused(request):
+        raise httpx.ConnectError("no route", request=request)
+
+    exact.handler = refused
+
+    with pytest.raises(ExactError, match="nothing was sent"):
+        await client.create("purchaseentry/PurchaseEntries", {"Journal": "60"})
+
+
+async def test_a_wrong_division_on_the_xml_api_still_reads_as_forbidden(client, exact):
+    exact.handler = lambda r: httpx.Response(403, text="Forbidden - WrongDivision")
+
+    with pytest.raises(ExactError, match="403: Forbidden - WrongDivision"):
+        await client.upload_xml("MatchSets", "<eExact/>", division=7)
+
+
+async def test_download_sends_the_token_only_over_https_to_exact(client, exact):
+    for url in ("http://start.exactonline.nl/docs/x", "https://elsewhere.example/x"):
+        with pytest.raises(ExactError, match="Not downloading"):
+            await client.download(url)
+    assert exact.requests == []
+
+
+async def test_upload_xml_posts_to_the_xml_api_for_the_division(client, exact):
+    exact.handler = lambda r: httpx.Response(200, text="<eExact/>")
+
+    assert await client.upload_xml("MatchSets", "<eExact/>") == "<eExact/>"
+
+    request = exact.requests[0]
+    assert request.url.path == "/docs/XMLUpload.aspx"
+    assert dict(request.url.params) == {"Topic": "MatchSets", "_Division_": "123"}
+    assert request.headers["Content-Type"] == "application/xml"
