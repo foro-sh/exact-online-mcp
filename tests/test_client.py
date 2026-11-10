@@ -213,15 +213,40 @@ async def test_a_write_refused_for_the_rate_limit_is_sent_again(client, exact, s
     assert sleeps == [61.0]
 
 
-async def test_a_write_that_times_out_is_not_sent_again(client, exact):
-    def timeout(request):
-        raise httpx.ReadTimeout("slow", request=request)
+@pytest.mark.parametrize("error", [httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.ReadError])
+async def test_a_write_lost_on_the_way_back_is_not_sent_again(client, exact, error):
+    def lost(request):
+        raise error("gone", request=request)
 
-    exact.handler = timeout
+    exact.handler = lost
 
     with pytest.raises(ExactError, match="may or may not have been booked"):
         await client.create("purchaseentry/PurchaseEntries", {"Journal": "60"})
     assert len(exact.requests) == 1
+
+
+async def test_a_write_that_never_reached_exact_says_nothing_was_sent(client, exact):
+    def refused(request):
+        raise httpx.ConnectError("no route", request=request)
+
+    exact.handler = refused
+
+    with pytest.raises(ExactError, match="nothing was sent"):
+        await client.create("purchaseentry/PurchaseEntries", {"Journal": "60"})
+
+
+async def test_a_wrong_division_on_the_xml_api_still_reads_as_forbidden(client, exact):
+    exact.handler = lambda r: httpx.Response(403, text="Forbidden - WrongDivision")
+
+    with pytest.raises(ExactError, match="403: Forbidden - WrongDivision"):
+        await client.upload_xml("MatchSets", "<eExact/>", division=7)
+
+
+async def test_download_sends_the_token_only_over_https_to_exact(client, exact):
+    for url in ("http://start.exactonline.nl/docs/x", "https://elsewhere.example/x"):
+        with pytest.raises(ExactError, match="Not downloading"):
+            await client.download(url)
+    assert exact.requests == []
 
 
 async def test_upload_xml_posts_to_the_xml_api_for_the_division(client, exact):

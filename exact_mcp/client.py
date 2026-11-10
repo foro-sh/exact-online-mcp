@@ -35,9 +35,9 @@ def _http_error(response: httpx.Response) -> ExactError:
         # Exact answers a record it won't accept with a 500 and says why, so it's no outage.
         return ExactError(f"Exact Online refused it: {reason}")
     text = reason or response.text[:300] or response.reason_phrase
-    if response.status_code == 403 and "WrongDivision" in text:
-        division = response.url.path.split("/")[3]
-        return ExactError(f"This connection can't use division {division}; see list_divisions for the ones it can.")
+    parts = response.url.path.split("/")
+    if response.status_code == 403 and "WrongDivision" in text and parts[1:3] == ["api", "v1"]:
+        return ExactError(f"This connection can't use division {parts[3]}; see list_divisions for the ones it can.")
     message = f"Exact Online returned {response.status_code}: {text}"
     if response.status_code == 403:
         # A valid token is still refused for parts of Exact the company's package, the app's scopes
@@ -126,7 +126,8 @@ class ExactClient:
     async def download(self, url: str) -> bytes:
         """The file behind an Exact URL, such as a document attachment's `Url`. Only Exact's own
         host gets the access token."""
-        if httpx.URL(url).host != httpx.URL(self._base_url).host:
+        target, base = httpx.URL(url), httpx.URL(self._base_url)
+        if (target.scheme, target.host) != (base.scheme, base.host):
             raise ExactError(f"Not downloading {url}: it isn't on {self._base_url}.")
         return (await self._get(url, None, accept="*/*")).content
 
@@ -148,8 +149,10 @@ class ExactClient:
     async def _write(self, url: str, **kwargs) -> httpx.Response:
         try:
             return await self._send("POST", url, **kwargs)
-        except httpx.TimeoutException as err:
-            # Exact may have booked it anyway, and a retry would book it twice.
+        except (httpx.ConnectError, httpx.ConnectTimeout) as err:
+            raise ExactError("Couldn't reach Exact Online, so nothing was sent; try again.") from err
+        except httpx.TransportError as err:
+            # The request may have reached Exact, which may have booked it, and a retry would book it twice.
             raise ExactError(
                 "Exact Online didn't answer in time, so this may or may not have been booked. Look it up"
                 " before trying again."

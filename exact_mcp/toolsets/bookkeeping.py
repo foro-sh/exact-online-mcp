@@ -8,6 +8,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Literal
 
 from fastmcp import FastMCP
@@ -199,13 +200,22 @@ def _rate(vat: dict) -> float:
     return percentage / 100 if percentage > 1 else percentage
 
 
+def _adds_vat(vat: dict | None) -> bool:
+    # Reverse-charged VAT is declared, not invoiced; B and N codes add none.
+    return vat is not None and not vat["Charged"] and vat["Type"] not in ("B", "N")
+
+
 def _vat_on_invoice(line: InvoiceLine, vat: dict | None) -> float:
+    if not _adds_vat(vat):
+        if line.vat_amount:
+            what = f"VAT code {vat['Code']} ({vat['Description']})" if vat else "A line without a VAT code"
+            raise ValueError(f"{what} adds no VAT to the invoice, so its line can't take a vat_amount.")
+        return 0.0
     if line.vat_amount is not None:
         return line.vat_amount
-    # Reverse-charged VAT is declared, not invoiced; B and N codes add none.
-    if vat is None or vat["Charged"] or vat["Type"] in ("B", "N"):
-        return 0.0
-    return round(line.amount * _rate(vat), 2)
+    # Half a cent rounds up, as on an invoice; round() on a float would make 2.625 2.62.
+    vat_amount = Decimal(str(line.amount)) * Decimal(str(_rate(vat)))
+    return float(vat_amount.quantize(Decimal("0.01"), ROUND_HALF_UP))
 
 
 def _invoice_lines(
@@ -237,7 +247,8 @@ def _invoice_lines(
         entry = {"GLAccount": account["ID"], "AmountFC": line.amount}
         optional = {
             "VATCode": _vat_code(code) if code else None,
-            "VATAmountFC": line.vat_amount,
+            # Sent, not left to Exact, so what is booked is what the preview checked.
+            "VATAmountFC": vat_amount if _adds_vat(vat) else None,
             "Description": line_description,
             "CostCenter": line.cost_center,
             "CostUnit": line.cost_unit,

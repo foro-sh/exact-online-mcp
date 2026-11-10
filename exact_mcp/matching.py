@@ -46,7 +46,9 @@ def upload_messages(text: str) -> list[dict]:
 
 
 def _references(item: dict) -> set[str]:
-    refs = {str(item["InvoiceNumber"])} if item.get("InvoiceNumber") else set()
+    # A short number such as 7 turns up in descriptions by chance, as in "Order 7".
+    number = str(item.get("InvoiceNumber") or "")
+    refs = {number} if len(number) >= 4 else set()
     if item.get("YourRef") and len(item["YourRef"]) >= 4:
         refs.add(item["YourRef"].lower())
     return refs

@@ -117,7 +117,9 @@ async def test_book_purchase_invoice_posts_the_entry_with_its_lines(server, exac
         "Description": "INV-114",
         "Document": DOCUMENT_ID,
         # The GL account's own VAT code, sent so the preview and the booking agree.
-        "PurchaseEntryLines": [{"GLAccount": COSTS_ID, "AmountFC": 100.0, "VATCode": "2  ", "Description": "Licences"}],
+        "PurchaseEntryLines": [
+            {"GLAccount": COSTS_ID, "AmountFC": 100.0, "VATCode": "2  ", "VATAmountFC": 21.0, "Description": "Licences"}
+        ],
     }
     duplicate_check = next(r for r in exact.requests if r.url.path.endswith("PurchaseEntries") and r.method == "GET")
     assert duplicate_check.url.params["$filter"] == f"Supplier eq guid'{SUPPLIER_ID}' and YourRef eq 'INV-114'"
@@ -145,8 +147,30 @@ async def test_a_total_a_cent_off_is_refused_too(server, exact):
     exact.handler = books = Books({})
     line = {"gl_account_code": "4500", "amount": 109.5}
 
-    with pytest.raises(ToolError, match=r"add up to 132.49 .* not .* 132.50"):
-        await call(server, "book_purchase_invoice", purchase(lines=[line], expected_total=132.5))
+    with pytest.raises(ToolError, match=r"add up to 132.50 .* not .* 132.49"):
+        await call(server, "book_purchase_invoice", purchase(lines=[line], expected_total=132.49))
+    assert books.posted == []
+
+
+@pytest.mark.parametrize(
+    ("amount", "vat", "total"), [(12.5, 2.63, 15.13), (-12.5, -2.63, -15.13), (109.5, 23.0, 132.5)]
+)
+async def test_half_a_cent_of_vat_rounds_up_and_is_sent_as_previewed(server, exact, amount, vat, total):
+    exact.handler = books = Books({})
+    line = {"gl_account_code": "4500", "amount": amount}
+
+    result = await call(server, "book_purchase_invoice", purchase(lines=[line], expected_total=total))
+
+    assert (result["vat"], result["total"]) == (vat, total)
+    assert books.posted[0][1]["PurchaseEntryLines"][0]["VATAmountFC"] == vat
+
+
+async def test_a_vat_amount_on_a_line_that_adds_no_vat_is_refused(server, exact):
+    exact.handler = books = Books({})
+    reverse_charged = {"gl_account_code": "4500", "amount": 100, "vat_code": "7", "vat_amount": 21}
+
+    with pytest.raises(ToolError, match=r"VAT code 7 \(Reverse charge\) adds no VAT"):
+        await call(server, "book_purchase_invoice", purchase(lines=[reverse_charged], expected_total=121))
     assert books.posted == []
 
 
@@ -546,6 +570,15 @@ def test_suggest_matches_from_a_settled_account_a_reference_and_a_unique_amount(
     [left] = result["unmatched"]
     assert left["EntryNumber"] == 22
     assert [c["EntryNumber"] for c in left["candidates"]] == [20, 21]
+
+
+def test_a_short_invoice_number_in_a_description_is_no_reference():
+    items = [open_item(1, 50, invoice=7), open_item(2, 50, invoice=12), open_item(3, -50, description="Order 7")]
+
+    result = matching.suggest_matches(items)
+
+    assert result["suggestions"] == []
+    assert [item["InvoiceNumber"] for item in result["unmatched"][0]["candidates"]] == [7, 12]
 
 
 def test_a_payment_with_no_invoice_open_is_listed_as_unmatched():
