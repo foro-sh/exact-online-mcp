@@ -1,7 +1,7 @@
 [project]
 name = "exact-online-mcp"
 version = "0.1.0"
-description = "Exact Online MCP server, read-only unless bookkeeping is switched on, deployable on foro.sh"
+description = "Exact Online MCP server, deployable on foro.sh"
 requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=4.1.0",

@@ -400,7 +400,7 @@ async def test_unconfigured_server_answers_with_setup_instructions(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
     async with Client(create_server()) as mcp:
-        assert len(await mcp.list_tools()) == 28
+        assert len(await mcp.list_tools()) == 28 + 16 + 9
         with pytest.raises(ToolError, match="foro's upstream broker.*FORO_UPSTREAM_BROKER_URL"):
             await mcp.call_tool("list_divisions", {})
 

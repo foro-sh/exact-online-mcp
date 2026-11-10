@@ -1,4 +1,5 @@
-"""Tools beyond the core ones, in groups that EXACT_TOOLSETS switches on (see the README)."""
+"""Tools beyond the core ones. All of them are listed; a foro project policy decides which an
+agent may call. Most need a module that only some Exact packages have."""
 
 from collections.abc import Awaitable, Callable
 
