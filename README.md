@@ -71,13 +71,13 @@ identifies a person, names a user or holds a file (see `exact_mcp/scope.py`).
 | Tool | What it does |
 | --- | --- |
 | `unbooked_documents` | Purchase (or sales) invoice documents in Exact that no entry is booked from yet: the to-do list |
-| `suggest_booking` | How a supplier's or customer's invoices were booked before: its defaults, and each GL account, VAT code and cost center on its recent invoices, most used first |
+| `suggest_booking` | How a supplier's or customer's invoices were booked before: its defaults, and each GL account, VAT code and cost center on its recent invoices, most used first. `vat_included` marks a coding whose VAT code includes the VAT, which the book tools refuse |
 | `book_purchase_invoice` | Books a purchase invoice or credit note, linked to its document |
 | `book_sales_invoice` | Books a sales invoice made outside Exact, such as in a webshop |
 | `book_journal_entry` | Books a balanced general journal entry: accruals, depreciation, reclassifications, clearing a suspense account |
 | `create_account` | Adds a supplier or customer |
 | `upload_document` | Stores an invoice's file in Exact, to book with its `document_id` |
-| `reconciliation_suggestions` | Sets of open receivables or payables that settle each other: an account that adds up to zero, a payment that names its invoices, or a payment with exactly one invoice of its amount |
+| `reconciliation_suggestions` | Sets of open receivables or payables that settle each other: an account that adds up to zero, a payment that names its invoices, or a payment with exactly one invoice of its amount. In a description, only a number or reference of at least four characters counts |
 | `match_open_items` | Matches such a set in Exact, so the invoice and its payment are no longer open |
 
 It also adds two prompts that walk an agent through the usual work: `book_purchase_invoices`
@@ -100,7 +100,10 @@ What keeps it from booking something wrong:
   - Open items only match when they are still open and add up to zero.
   - A Dutch VAT number on a new account must pass the Belastingdienst's check.
 - `expected_total` is the invoice's own total. The server works out each line's VAT from its VAT
-  code, as Exact does, and refuses an invoice whose lines don't add up to it.
+  code, with half a cent rounded up, and sends that amount on the line so Exact books what the
+  check saw. A line may pass `vat_amount` when the invoice rounds differently. A line that adds
+  no VAT (no code, reverse charge, or type `B` or `N`) can't take one, and a VAT-inclusive code
+  is refused.
 - An invoice that looks booked already is refused:
   - A purchase invoice when the supplier already has its invoice number.
   - A sales invoice when its invoice number or reference is already booked.
@@ -108,8 +111,9 @@ What keeps it from booking something wrong:
 
   The same goes for a supplier or customer whose name, VAT number or chamber of commerce number
   Exact already has. `allow_duplicate` overrides this.
-- If Exact doesn't answer a write in time, the server doesn't send it again, because Exact may
-  have booked it. It says to look the booking up first.
+- If Exact can't be reached, nothing was sent and the tool says to try again. If a write was
+  sent and Exact doesn't answer, the server doesn't send it again, because Exact may have booked
+  it, and it says to look the booking up first.
 - Write tools only add: an entry, an account, a document or a match. They never change or delete
   one. A wrong booking is corrected the usual way, with a reversal or a journal entry.
 
@@ -181,8 +185,9 @@ Until the grant exists, the server still deploys, and every tool says how to con
 - `financial_overview` makes three calls.
 - `project_hours` and `subscription_mrr` read endpoints without a bulk version, up to 2,000 rows
   each. `stock_levels` checks reorder points on up to 1,000 rows.
-- `get_document` makes one call for the list of files and one per file. It returns at most
-  10 MB of files, which go into the agent's context, and `upload_document` takes at most 10 MB.
+- `get_document` makes one call for the list of files and one per file, downloading each from
+  its `Url` on Exact's host over https. It returns at most 10 MB of files, which go into the
+  agent's context, and `upload_document` takes at most 10 MB.
 - Booking an invoice makes about six calls: the supplier or customer, the journals, the chart of
   accounts, the VAT codes, the check for a double booking, and the booking itself, plus one for
   cost centers and one for cost units when lines name them. `match_open_items` makes four, and
@@ -197,9 +202,22 @@ uv run pytest
 uv run ruff format . && uv run ruff check .
 ```
 
-## Status: not yet run against a live Exact company
+## Status
 
-The tests run against recorded API shapes, not a real administration.
+The tests run against recorded API shapes. These points were also seen on one live company:
+
+- A listing of `DocumentAttachments` leaves `Attachment` empty, so `get_document` downloads each
+  file from its `Url`.
+- `create_account`'s answer leaves most fields empty, so the tool returns what it sent.
+- Exact refuses an invalid Dutch VAT number only when the account is created, so
+  `create_account` checks a Dutch number first.
+- Exact books an invoice total as the lines add up, to the cent.
+- Exact rounds an amount to cents after checking that a journal entry balances, so an amount
+  with more than two decimals is refused here.
+- A record Exact will not accept comes back as HTTP 500 with a reason, and a division this
+  connection can't use as 403 `WrongDivision`.
+- `ReceivablesList` and `PayablesList` show an invoice as positive and a payment or credit note
+  as negative, on either side.
 
 Checked against [Exact's REST reference](https://start.exactonline.nl/docs/HlpRestAPIResources.aspx):
 
@@ -279,8 +297,7 @@ Still to check on a test company:
   type to tell them apart.
 - That a subscription line's `AmountDC` is its amount per invoice period, as `subscription_mrr`
   assumes.
-- That `DocumentAttachments` returns the Base64 `Attachment` in a list request, and that
-  `FileSize` is in bytes.
+- That `DocumentAttachments.FileSize` is in bytes.
 - That `ItemWarehouses`, `Projects`, `TimeTransactions`, `Quotations`, `Opportunities`,
   `Subscriptions` and `Documents` filter on the fields the tools use. Their pages show no limits.
 - That every service answers `$metadata`, which Exact's knowledge base documents and
@@ -289,13 +306,11 @@ Still to check on a test company:
   transaction lines itself.
 - Whether `$expand` of invoice lines works, as some third-party clients use it. It would make
   the `get_` invoice tools one call.
-- What the bookkeeping toolset assumes beyond that, none of it tried on a live company yet:
+- What booking still assumes:
   - That `VATCodes.Percentage` is a fraction like other percentages. The server reads a value
     above 1 as a percent anyway, since no VAT rate reaches 100%.
   - That Exact accepts `Type` on a new entry, which its docs list but don't mark as settable.
   - That `FinancialTransactionEntryID eq null` picks out documents no entry was booked from, and
     that booking an entry with a `Document` fills it.
-  - That an unmatched payment shows in `ReceivablesList` and `PayablesList` with the opposite
-    sign of the invoices.
 - How long an unused refresh token lives. Reports say 30 days, which would mean a server
   idle for a month needs reconnecting.
