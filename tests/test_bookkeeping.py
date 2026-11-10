@@ -548,6 +548,16 @@ def test_suggest_matches_from_a_settled_account_a_reference_and_a_unique_amount(
     assert [c["EntryNumber"] for c in left["candidates"]] == [20, 21]
 
 
+def test_a_payment_with_no_invoice_open_is_listed_as_unmatched():
+    # More payments than invoices, and an account with only a payment: still payments.
+    items = [open_item(1, 100), open_item(2, -40), open_item(3, -30), open_item(4, -8875, account="b")]
+
+    result = matching.suggest_matches(items)
+
+    assert result["suggestions"] == []
+    assert [(item["EntryNumber"], item["candidates"]) for item in result["unmatched"]] == [(2, []), (3, []), (4, [])]
+
+
 def test_a_payment_booked_against_an_invoice_is_a_reference():
     items = [open_item(1, 40, invoice=7), open_item(2, 40, invoice=8), {**open_item(3, -40), "InvoiceNumber": 8}]
 

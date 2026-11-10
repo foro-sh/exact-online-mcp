@@ -94,11 +94,10 @@ def suggest_matches(open_items: list[dict]) -> dict:
         if len(items) > 1 and _settles(items):
             found.append(("account_settled", items))
         else:
-            # Payments and credit notes have the opposite sign of the invoices they settle; the larger
-            # side is taken as the invoices.
-            positive = [item for item in items if item["Amount"] > 0]
-            negative = [item for item in items if item["Amount"] < 0]
-            invoices, payments = (positive, negative) if len(positive) >= len(negative) else (negative, positive)
+            # ReceivablesList and PayablesList both show what is owed as positive, so an invoice is
+            # positive and a payment or credit note negative, on either side (seen in a live company).
+            invoices = [item for item in items if item["Amount"] > 0]
+            payments = [item for item in items if item["Amount"] < 0]
             used: set[int] = set()
             for payment in sorted(payments, key=lambda p: abs(p["Amount"]), reverse=True):
                 free = [item for item in invoices if id(item) not in used]

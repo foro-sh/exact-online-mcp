@@ -294,16 +294,22 @@ def register_prompts(mcp: FastMCP) -> None:
         return (
             "Book the purchase invoices waiting in Exact Online, one at a time:\n"
             "1. unbooked_documents lists the purchase invoices nobody has booked yet. Read each with "
-            "get_document (the documents toolset).\n"
+            "get_document (the documents toolset). Skip a document without a file: its subject and "
+            "amount aren't enough to book it.\n"
             "2. Find the supplier with search_accounts (role supplier), by name, and check its VAT or "
-            "chamber of commerce number with get_account. Only when there is none, create_account.\n"
+            "chamber of commerce number with get_account. Only when there is none, create_account "
+            "with the VAT and chamber of commerce numbers on the invoice; it refuses a party Exact "
+            "already has under another name.\n"
             "3. suggest_booking shows how this supplier's invoices were booked before: use its GL "
-            "account, VAT code and cost center unless the invoice is clearly about something else.\n"
+            "account, VAT code and cost center unless the invoice is clearly about something else. "
+            "For a supplier without history, take the GL account from search_gl_accounts only when "
+            "its description plainly fits the invoice, and say so in your report. A coding with "
+            "vat_included true needs the excluding VAT code of the same rate.\n"
             "4. book_purchase_invoice with dry_run true, the supplier's invoice number, every line "
             "excluding VAT, the document_id and the invoice's total as expected_total. If the total "
             "doesn't add up, fix the lines rather than dropping expected_total.\n"
             "5. Book it without dry_run. Skip and report any invoice you aren't sure of: a supplier "
-            "you can't place, a GL account with no history, or a total you can't make add up.\n"
+            "you can't place, no GL account that plainly fits, or a total you can't make add up.\n"
             "Finish with what you booked, the total per GL account, and what you skipped and why."
         )
 
@@ -893,8 +899,8 @@ def register(tool, get_client) -> None:
     ) -> dict:
         """Sets of open items that settle each other, ready for match_open_items: an account whose
         open items add up to zero, a payment whose description names the invoices it pays, or a
-        payment with exactly one invoice of its amount. Payments with no clear invoice are listed
-        as unmatched, with any invoices of the same amount as candidates."""
+        payment with exactly one invoice of its amount. Payments and credit notes with no clear
+        invoice are listed as unmatched, with any invoices of the same amount as candidates."""
         filters = [f"AccountId eq {odata.guid(account_id)}"] if account_id else []
         client = await get_client()
         rows = await client.list(
