@@ -22,15 +22,23 @@ class RateLimitedError(ExactError):
     pass
 
 
-def _error_message(response: httpx.Response) -> str:
+def _json_message(response: httpx.Response) -> str | None:
     try:
         return response.json()["error"]["message"]["value"]
     except (ValueError, KeyError, TypeError):
-        return response.text[:300] or response.reason_phrase
+        return None
 
 
 def _http_error(response: httpx.Response) -> ExactError:
-    message = f"Exact Online returned {response.status_code}: {_error_message(response)}"
+    reason = _json_message(response)
+    if response.status_code == 500 and reason:
+        # Exact answers a record it won't accept with a 500 and says why, so it's no outage.
+        return ExactError(f"Exact Online refused it: {reason}")
+    text = reason or response.text[:300] or response.reason_phrase
+    if response.status_code == 403 and "WrongDivision" in text:
+        division = response.url.path.split("/")[3]
+        return ExactError(f"This connection can't use division {division}; see list_divisions for the ones it can.")
+    message = f"Exact Online returned {response.status_code}: {text}"
     if response.status_code == 403:
         # A valid token is still refused for parts of Exact the company's package, the app's scopes
         # or the user's rights don't cover, so say which endpoint it was.

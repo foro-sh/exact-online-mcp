@@ -57,6 +57,16 @@ class Books:
         }
         self.rows.setdefault("GLAccounts", CHART)
         self.rows.setdefault("VATCodes", VAT_CODES)
+        # What the matched entries leave open, unless a test says otherwise.
+        self.rows.setdefault(
+            "ReceivablesList",
+            [
+                {"JournalCode": r["JournalCode"], "EntryNumber": r["EntryNumber"]}
+                for r in rows.get("TransactionLines", [])
+                if "JournalCode" in r
+            ],
+        )
+        self.party = {"ID": SUPPLIER_ID, "Name": "Acme", "IsSupplier": True, "IsSales": True}
         self.posted: list[tuple[str, object]] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -68,6 +78,13 @@ class Books:
             body = json.loads(request.content)
             self.posted.append((name, body))
             return httpx.Response(201, json={"d": {"EntryID": ENTRY_ID, "EntryNumber": 26700001, "ID": DOCUMENT_ID}})
+        if (
+            name == "Accounts"
+            and "Accounts" not in self.rows
+            and request.url.params.get("$filter", "").startswith("ID eq")
+        ):
+            # The supplier or customer an invoice is booked on.
+            return httpx.Response(200, json=odata([self.party] if self.party else []))
         return httpx.Response(200, json=odata(self.rows.get(name, [])))
 
 
@@ -215,6 +232,43 @@ async def test_invoice_lines_are_checked_before_anything_is_booked(server, exact
     assert books.posted == []
 
 
+async def test_an_invoice_is_refused_on_an_account_that_isnt_that_party(server, exact):
+    exact.handler = books = Books({})
+    books.party = {**books.party, "IsSupplier": False}
+
+    with pytest.raises(ToolError, match="Acme isn't a supplier in Exact"):
+        await call(server, "book_purchase_invoice", purchase(dry_run=True))
+
+    books.party = None
+    with pytest.raises(ToolError, match=f"No account {SUPPLIER_ID} in this division"):
+        await call(server, "book_purchase_invoice", purchase(dry_run=True))
+
+
+async def test_a_cost_center_exact_doesnt_have_is_refused(server, exact):
+    exact.handler = Books({"Costcenters": [{"Code": "100"}]})
+    lines = [{"gl_account_code": "4500", "amount": 50, "cost_center": "100"}, {**COSTS, "cost_center": "NOPE"}]
+
+    with pytest.raises(ToolError, match="No cost center NOPE in this division"):
+        await call(server, "book_purchase_invoice", purchase(lines=lines, dry_run=True))
+
+
+async def test_an_amount_with_more_than_two_decimals_is_refused(server, exact):
+    exact.handler = Books({})
+
+    with pytest.raises(ToolError, match="more than two decimals"):
+        await call(server, "book_purchase_invoice", purchase(lines=[{**COSTS, "amount": 10.004}]))
+
+
+async def test_a_supplier_invoice_number_with_spaces_is_still_caught_as_booked(server, exact):
+    exact.handler = Books({"PurchaseEntries": [{"EntryNumber": 26700001, "EntryDate": "2026-10-01"}]})
+
+    with pytest.raises(ToolError, match="looks booked already"):
+        await call(server, "book_purchase_invoice", purchase(supplier_invoice_number=" INV-114 "))
+
+    check = next(r for r in exact.requests if r.url.path.endswith("PurchaseEntries"))
+    assert check.url.params["$filter"].endswith("YourRef eq 'INV-114'")
+
+
 async def test_a_division_with_several_purchase_journals_needs_one_named(server, exact):
     journals = [{"Code": "60", "IsBlocked": False}, {"Code": "61", "IsBlocked": False}]
     exact.handler = Books({"Journals": journals})
@@ -278,6 +332,29 @@ async def test_book_journal_entry_books_a_balanced_entry_in_its_period(server, e
 
 
 COSTS = {"gl_account_code": "4500", "amount": 10}
+
+
+async def test_a_journal_entry_the_journal_already_has_is_refused(server, exact):
+    exact.handler = books = Books(
+        {
+            "Journals": GENERAL,
+            "FinancialPeriods": [{"FinYear": 2026, "FinPeriod": 10}],
+            "TransactionLines": [{"EntryNumber": 26900004, "Date": "2026-10-31"}],
+        }
+    )
+    lines = [COSTS, {"gl_account_code": "4500", "amount": -10, "description": "Back"}]
+
+    with pytest.raises(ToolError, match="looks booked already, as entry 26900004"):
+        await call(server, "book_journal_entry", journal_entry(lines))
+
+    check = next(r for r in exact.requests if r.url.path.endswith("TransactionLines"))
+    assert check.url.params["$filter"] == (
+        "JournalCode eq '90' and Date eq datetime'2026-10-31' and GLAccountCode eq '4500' and "
+        "AmountFC eq 10.0 and Description eq 'Accrue October rent'"
+    )
+    assert books.posted == []
+    await call(server, "book_journal_entry", journal_entry(lines, allow_duplicate=True))
+    assert len(books.posted) == 1
 
 
 @pytest.mark.parametrize(
@@ -411,7 +488,7 @@ async def test_suggest_booking_ranks_how_the_supplier_was_booked(server, exact):
             "PurchaseEntryLines": [
                 {**line, "EntryID": entries[0]["EntryID"], "GLAccountCode": "4500", "AmountFC": 100},
                 {**line, "EntryID": entries[1]["EntryID"], "GLAccountCode": "4500", "AmountFC": 100},
-                {**line, "EntryID": entries[2]["EntryID"], "GLAccountCode": "4510", "AmountFC": 50},
+                {**line, "EntryID": entries[2]["EntryID"], "GLAccountCode": "4510", "AmountFC": 50, "VATCode": "5"},
             ],
         }
     )  # fmt: skip
@@ -425,6 +502,7 @@ async def test_suggest_booking_ranks_how_the_supplier_was_booked(server, exact):
     }
     top = result["codings"][0]
     assert (top["gl_account_code"], top["invoices"], top["share"], top["total"]) == ("4500", 2, 0.67, 200.0)
+    assert [c["vat_included"] for c in result["codings"]] == [False, True]
     assert top["last_used"] == "2026-10-01"
     lines_request = next(r for r in exact.requests if r.url.path.endswith("PurchaseEntryLines"))
     assert lines_request.url.params["$filter"].startswith(f"(EntryID eq guid'{entries[0]['EntryID']}' or ")
@@ -557,6 +635,17 @@ async def test_match_open_items_names_an_item_with_nothing_open(server, exact):
 
     with pytest.raises(ToolError, match="nothing on receivables or payables from journal 20 entry 26200003"):
         await call(server, "match_open_items", MATCH)
+
+
+async def test_match_open_items_refuses_an_item_that_is_no_longer_open(server, exact):
+    lines = [transaction_line("70", 26700001, "1300", 121.0), transaction_line("20", 26200003, "1300", -121.0)]
+    exact.handler = books = Books(
+        {"TransactionLines": lines, "ReceivablesList": [{"JournalCode": "70", "EntryNumber": 26700001}]}
+    )
+
+    with pytest.raises(ToolError, match="already matched or paid: journal 20 entry 26200003"):
+        await call(server, "match_open_items", {**MATCH, "dry_run": True})
+    assert books.posted == []
 
 
 async def test_exact_refusing_the_match_is_a_tool_error(server, exact):

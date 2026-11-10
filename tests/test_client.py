@@ -133,6 +133,21 @@ async def test_exact_error_message_is_surfaced(client, exact):
         await client.list("crm/Accounts", select=["Nope"], limit=1)
 
 
+async def test_a_record_exact_refuses_reads_as_a_refusal_not_an_outage(client, exact):
+    exact.handler = lambda r: httpx.Response(
+        500, json={"error": {"code": "", "message": {"lang": "", "value": "Ongeldige referentie: Leverancier"}}}
+    )
+    with pytest.raises(ExactError, match="^Exact Online refused it: Ongeldige referentie: Leverancier$"):
+        await client.create("purchaseentry/PurchaseEntries", {})
+
+
+async def test_a_division_the_user_cant_use_points_to_list_divisions(client, exact):
+    exact.handler = lambda r: httpx.Response(403, text="Forbidden - WrongDivision")
+
+    with pytest.raises(ExactError, match="can't use division 7; see list_divisions"):
+        await client.list("financial/Journals", select=["Code"], limit=1, division=7)
+
+
 async def test_forbidden_names_the_endpoint_and_the_likely_causes(client, exact):
     exact.handler = lambda r: httpx.Response(403, text="Forbidden")
 

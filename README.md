@@ -63,8 +63,8 @@ Exact packages have.
 
 `query` reads any other Exact resource with OData's `$select`, `$filter` and `$orderby`, and
 `describe_resource` lists a resource's fields. Neither reads payroll, HR, user or mailbox
-resources, or a field that identifies a person, names a user or holds a file (see
-`exact_mcp/scope.py`).
+resources, contact people (`list_contacts` gives their business details), or a field that
+identifies a person, names a user or holds a file (see `exact_mcp/scope.py`).
 
 ### Bookkeeping
 
@@ -86,20 +86,25 @@ and `reconcile_open_items`. The first reads each invoice's file with `get_docume
 
 What keeps it from booking something wrong:
 
-- Every write tool takes `dry_run`. It checks everything and shows what would be booked, without
-  booking it.
+- Every write tool takes `dry_run`. It checks what the server can check and shows what would be
+  booked, without booking it. Exact can still refuse a booking for what isn't checked, such as a
+  closed period or an inactive currency.
 - Everything is checked before anything is sent:
   - Every GL account must exist and not be blocked. An invoice line can't go on a receivables,
     payables, VAT, cash or bank account, and a journal entry line can't go on cash or bank.
   - Every VAT code must exist, not be blocked, and be for the right side (sales or purchases).
+  - An invoice's supplier or customer must exist and be one in Exact.
+  - Every cost center and cost unit must exist.
+  - Amounts have at most two decimals.
   - A journal entry must balance.
-  - Open items only match when they add up to zero.
+  - Open items only match when they are still open and add up to zero.
   - A Dutch VAT number on a new account must pass the Belastingdienst's check.
 - `expected_total` is the invoice's own total. The server works out each line's VAT from its VAT
   code, as Exact does, and refuses an invoice whose lines don't add up to it.
 - An invoice that looks booked already is refused:
   - A purchase invoice when the supplier already has its invoice number.
   - A sales invoice when its invoice number or reference is already booked.
+  - A journal entry when the journal already has its first line on that day.
 
   The same goes for a supplier or customer whose name, VAT number or chamber of commerce number
   Exact already has. `allow_duplicate` overrides this.
@@ -178,8 +183,9 @@ Until the grant exists, the server still deploys, and every tool says how to con
   each. `stock_levels` checks reorder points on up to 1,000 rows.
 - `get_document` makes one call for the list of files and one per file. It returns at most
   10 MB of files, which go into the agent's context, and `upload_document` takes at most 10 MB.
-- Booking an invoice makes about five calls: the journals, the chart of accounts, the VAT codes,
-  the check for a double booking, and the booking itself. `match_open_items` makes three, and
+- Booking an invoice makes about six calls: the supplier or customer, the journals, the chart of
+  accounts, the VAT codes, the check for a double booking, and the booking itself, plus one for
+  cost centers and one for cost units when lines name them. `match_open_items` makes four, and
   `upload_document` three: the document type, the document and its file.
   `reconciliation_suggestions` reads open items 60 a call.
 

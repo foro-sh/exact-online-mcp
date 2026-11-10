@@ -11,7 +11,7 @@ from datetime import date
 from typing import Annotated, Literal
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 
 from .. import matching, odata
 from ..client import ExactError
@@ -27,6 +27,15 @@ OPEN_ITEM_TYPES = {20: "receivables", 22: "payables"}
 # type with documents/DocumentTypes before using it.
 DOCUMENT_TYPES = {"sales_invoice": 10, "purchase_invoice": 20}
 
+
+def _cents(value: float | None) -> float | None:
+    # Exact rounds an amount to cents itself, after the check that the lines balance.
+    if value is not None and abs(value * 100 - round(value * 100)) > 1e-6:
+        raise ValueError(f"{value} has more than two decimals; give amounts in cents.")
+    return value
+
+
+Cents = AfterValidator(_cents)
 DryRun = Annotated[bool, Field(description="Check everything and return what would be booked, without booking it.")]
 CostCenter = Annotated[str | None, Field(description="Cost center code.")]
 CostUnit = Annotated[str | None, Field(description="Cost unit code.")]
@@ -35,11 +44,13 @@ ProjectId = Annotated[str | None, Field(description="Project ID (GUID).")]
 
 class InvoiceLine(BaseModel):
     gl_account_code: str = Field(description="GL account to book the line on; see suggest_booking.")
-    amount: float = Field(description="Amount excluding VAT, in the invoice's currency. Negative on a credit note.")
+    amount: Annotated[float, Cents] = Field(
+        description="Amount excluding VAT, in the invoice's currency. Negative on a credit note."
+    )
     vat_code: str | None = Field(
         None, description="VAT code (see list_vat_codes). Default: the GL account's own VAT code."
     )
-    vat_amount: float | None = Field(
+    vat_amount: Annotated[float | None, Cents] = Field(
         None, description="The VAT on the invoice for this line, when it differs from the VAT code's by rounding."
     )
     description: str | None = None
@@ -50,7 +61,9 @@ class InvoiceLine(BaseModel):
 
 class JournalLine(BaseModel):
     gl_account_code: str
-    amount: float = Field(description="Debit positive, credit negative. The lines must add up to zero.")
+    amount: Annotated[float, Cents] = Field(
+        description="Debit positive, credit negative. The lines must add up to zero."
+    )
     description: str | None = None
     account_id: str | None = Field(
         None, description="Customer or supplier (GUID); required on a receivables or payables account."
@@ -75,10 +88,15 @@ class Side:
     vat_use: str
     invoice_type: int
     credit_note_type: int
+    # The crm/Accounts flag an account needs to be booked on this side, and what it's called.
+    party_flag: str
+    party_role: str
 
 
-PURCHASE = Side("purchaseentry/PurchaseEntries", "PurchaseEntryLines", "Supplier", "purchase", "P", 30, 31)
-SALES = Side("salesentry/SalesEntries", "SalesEntryLines", "Customer", "sales", "S", 20, 21)
+PURCHASE = Side(
+    "purchaseentry/PurchaseEntries", "PurchaseEntryLines", "Supplier", "purchase", "P", 30, 31, "IsSupplier", "supplier"
+)
+SALES = Side("salesentry/SalesEntries", "SalesEntryLines", "Customer", "sales", "S", 20, 21, "IsSales", "customer")
 
 
 async def _chart(client, division) -> dict[str, dict]:
@@ -129,6 +147,45 @@ async def _journal(client, division, code: str | None, journal_type: str) -> dic
 async def _vat_codes(client, division) -> dict[str, dict]:
     rows = await client.list("vat/VATCodes", select=VAT_CODE_FIELDS, limit=1000, division=division)
     return {row["Code"]: row for row in rows}
+
+
+async def _party(client, division, side: Side, party_id: str) -> dict:
+    """The supplier or customer an invoice is for, checked before Exact refuses it."""
+    rows = await client.list(
+        "crm/Accounts",
+        select=["ID", "Name", side.party_flag],
+        filters=[f"ID eq {odata.guid(party_id)}"],
+        limit=1,
+        division=division,
+    )
+    if not rows:
+        raise ValueError(f"No account {party_id} in this division; see search_accounts.")
+    if not rows[0][side.party_flag]:
+        raise ValueError(
+            f"{rows[0]['Name']} isn't a {side.party_role} in Exact, so Exact won't book this on it. Use the "
+            f"{side.party_role}, or make this account one in Exact first."
+        )
+    return rows[0]
+
+
+async def _check_cost_codes(client, division, lines) -> None:
+    """Every cost center and cost unit on the lines exists, checked before Exact refuses them."""
+    for resource, field, kind in (
+        ("hrm/Costcenters", "cost_center", "cost center"),
+        ("hrm/Costunits", "cost_unit", "cost unit"),
+    ):
+        codes = {getattr(line, field).strip() for line in lines if getattr(line, field)}
+        if not codes:
+            continue
+        rows = await client.list(
+            resource,
+            select=["Code"],
+            filters=[f"({' or '.join(f'Code eq {odata.string(code)}' for code in sorted(codes))})"],
+            limit=len(codes),
+            division=division,
+        )
+        if missing := codes - {row["Code"].strip() for row in rows}:
+            raise ValueError(f"No {kind} {', '.join(sorted(missing))} in this division.")
 
 
 def _vat_code(code: str) -> str:
@@ -309,7 +366,9 @@ def register(tool, get_client) -> None:
     ) -> dict:
         """How a supplier's (or customer's) invoices are usually booked: the account's default GL
         account, VAT code and payment condition, its recent invoices, and each combination of GL
-        account, VAT code and cost center on their lines, most used first."""
+        account, VAT code and cost center on their lines, most used first. A coding with
+        vat_included true was booked with a VAT code that includes VAT, which the book tools don't
+        take: book it with the excluding code of the same rate."""
         side = PURCHASE if role == "supplier" else SALES
         kind = "Purchase" if role == "supplier" else "Sales"
         client = await get_client()
@@ -382,12 +441,16 @@ def register(tool, get_client) -> None:
                 descriptions = coding["descriptions"]
                 if line["Description"] and len(descriptions) < 3 and line["Description"] not in descriptions:
                     descriptions.append(line["Description"])
+        included = (
+            {code for code, vat in (await _vat_codes(client, div)).items() if vat["Type"] == "I"} if codings else set()
+        )
         ranked = []
         for coding in codings.values():
             used = len(coding.pop("entries"))
             ranked.append(
                 {
                     **coding,
+                    "vat_included": (coding["vat_code"] or "").strip() in included,
                     "invoices": used,
                     "share": round(used / len(recent), 2),
                     "total": round(coding["total"], 2),
@@ -421,7 +484,9 @@ def register(tool, get_client) -> None:
         client = await get_client()
         div = await client.division(division)
         party = odata.parse_guid(party_id)
+        await _party(client, div, side, party_id)
         journal = (await _journal(client, div, journal_code, side.journal_type))["Code"]
+        await _check_cost_codes(client, div, lines)
         payload, preview = _invoice_lines(
             lines, await _chart(client, div), await _vat_codes(client, div), side, header.get("Description")
         )
@@ -495,6 +560,8 @@ def register(tool, get_client) -> None:
         journal. Exact books the total on the supplier's payables and the VAT from each line's VAT
         code; the preview's VAT is worked out the same way to check it against expected_total.
         Refuses an invoice whose supplier invoice number this supplier already has."""
+        # A stray space would get past the check for a second booking.
+        supplier_invoice_number = supplier_invoice_number.strip()
         return await _book_invoice(
             PURCHASE,
             supplier_id,
@@ -547,6 +614,7 @@ def register(tool, get_client) -> None:
         """Book a sales invoice made outside Exact, such as in a webshop or another invoicing
         system, in the sales journal (negative amounts for a credit note). It needs an
         invoice_number or a reference, so the same invoice can't be booked twice."""
+        reference = reference.strip() if reference else None
         if invoice_number is None and not reference:
             raise ValueError("Give the invoice_number or a reference, so a second booking of it can be caught.")
         if invoice_number is not None:
@@ -585,13 +653,15 @@ def register(tool, get_client) -> None:
         ] = None,
         currency: str | None = None,
         dry_run: DryRun = False,
+        allow_duplicate: bool = False,
         division: Division = None,
     ) -> dict:
         """Book a general journal (memorial) entry, such as an accrual, a depreciation, a
         reclassification or clearing a suspense account. The lines must balance: debit positive,
         credit negative, adding up to zero. Lines on receivables or payables need the customer or
         supplier, and cash and bank accounts are refused: money moves through their own journals.
-        Without VAT: book VAT through an invoice."""
+        Without VAT: book VAT through an invoice. Refuses an entry whose first line the journal
+        already has on that day, so a retry doesn't book it twice."""
         if abs(total := sum(line.amount for line in lines)) >= matching.TOLERANCE:
             raise ValueError(f"The lines add up to {total:.2f}, not zero: debit and credit must balance.")
         client = await get_client()
@@ -611,6 +681,7 @@ def register(tool, get_client) -> None:
         if not periods:
             raise ValueError(f"No financial period in Exact covers {entry_date}; check the division's financial years.")
         chart = await _chart(client, div)
+        await _check_cost_codes(client, div, lines)
         payload, preview = [], []
         for line in lines:
             account = _gl_account(chart, line.gl_account_code, CASH_TYPES)
@@ -647,6 +718,26 @@ def register(tool, get_client) -> None:
                     "description": line.description or description,
                 }
             )
+        if not allow_duplicate:
+            first = preview[0]
+            existing = await client.list(
+                "financialtransaction/TransactionLines",
+                select=["EntryNumber", "Date"],
+                filters=[
+                    f"JournalCode eq {odata.string(journal)}",
+                    f"Date eq {odata.datetime_literal(entry_date)}",
+                    f"GLAccountCode eq {odata.string(first['gl_account_code'])}",
+                    f"AmountFC eq {first['amount']}",
+                    f"Description eq {odata.string(first['description'])}",
+                ],
+                limit=1,
+                division=div,
+            )
+            if existing:
+                raise ValueError(
+                    f"This entry looks booked already, as entry {existing[0]['EntryNumber']} of {entry_date}. "
+                    "Pass allow_duplicate only if it really is another one."
+                )
         body = {
             "JournalCode": journal,
             "FinancialYear": periods[0]["FinYear"],
@@ -881,6 +972,20 @@ def register(tool, get_client) -> None:
         if len(gl_codes) != 1:
             raise ValueError(
                 f"The items are on different GL accounts ({', '.join(sorted(gl_codes))}); match per account."
+            )
+        gl_code = next(iter(gl_codes))
+        open_rows = await client.list(
+            "read/financial/ReceivablesList" if chart[gl_code]["Type"] == 20 else "read/financial/PayablesList",
+            select=["JournalCode", "EntryNumber"],
+            filters=[f"AccountId eq {odata.guid(account_id)}"],
+            limit=2000,
+            division=div,
+        )
+        if closed := wanted - {(row["JournalCode"].strip(), row["EntryNumber"]) for row in open_rows}:
+            raise ValueError(
+                "Not open any more, so already matched or paid: "
+                + ", ".join(f"journal {journal} entry {entry}" for journal, entry in sorted(closed))
+                + "."
             )
         match_lines = [
             {"year": year, "period": period, "journal": journal, "entry": entry, "amount_dc": round(amount, 2)}

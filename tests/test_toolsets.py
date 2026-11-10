@@ -352,7 +352,11 @@ async def test_query_refuses_payroll_and_identity_fields_before_calling_exact(se
         with pytest.raises(ToolError, match="doesn't read payroll"):
             await mcp.call_tool("query", {"resource": "payroll/Employees", "select": ["ID"]})
         with pytest.raises(ToolError, match="identify people"):
-            await mcp.call_tool("query", {"resource": "crm/Contacts", "select": ["FullName", "BirthDate"]})
+            await mcp.call_tool("query", {"resource": "crm/Accounts", "select": ["Name", "PictureThumbnailUrl"]})
+        with pytest.raises(ToolError, match="doesn't read contact people"):
+            await mcp.call_tool("query", {"resource": "crm/Contacts", "select": ["FullName", "Mobile"]})
+        with pytest.raises(ToolError, match="doesn't read contact people"):
+            await mcp.call_tool("describe_resource", {"resource": "sync/CRM/Contacts"})
     assert exact.requests == []
 
 

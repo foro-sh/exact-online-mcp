@@ -16,6 +16,10 @@ DENIED_FIELDS = {
     "nationality",
     "picture",
     "pictureurl",
+    "picturename",
+    "picturethumbnailurl",
+    "partnername",
+    "partnernameprefix",
     "creator",
     "creatorfullname",
     "modifier",
@@ -42,6 +46,9 @@ def resource_parts(resource: str) -> tuple[str, str]:
         raise ValueError(f"query can't read {path}; it needs a service and a resource, such as crm/Accounts.")
     if inner[0] in DENIED_SERVICES and not (inner[0] == "hrm" and inner[-1] in ALLOWED_HRM):
         raise ValueError(f"query doesn't read {inner[0]} resources, which hold records about people or users.")
+    if inner[-1] == "contacts":
+        # Contact people's own phone, email and address; list_contacts reads only the business ones.
+        raise ValueError("query doesn't read contact people; list_contacts gives their business details.")
     return "/".join(parts[:-1]), parts[-1]
 
 
