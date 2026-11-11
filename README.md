@@ -145,9 +145,11 @@ You connect it once from the foro dashboard, and from then on foro refreshes it.
 
 ## Setup
 
-**1. Register an Exact app.** In the [Exact App Center](https://apps.exactonline.com), under
-*Manage* → *Apps*, register an app for your region with redirect URI
-`https://foro.sh/api/upstream-grants/callback`. Note the client ID and secret. An app
+**1. Register an Exact app.** Sign in to Exact Online for your region, open the admin menu to
+the right of the Exact Online logo and choose *Import/Export*. Under *Other*, click
+*App registrations*, then *New*. Give it any name and the redirect URL
+`https://foro.sh/api/upstream-grants/callback`, save, and note the client ID and secret
+([video walkthrough](https://www.loom.com/share/c7b89ce4b1f441a897800bd61c3afd82)). An app
 registered here has no rights of its own: its token can do whatever the Exact user who connects
 it in step 3 may do. To book, that user's roles in Exact must allow booking entries and adding
 accounts and documents in the division.
