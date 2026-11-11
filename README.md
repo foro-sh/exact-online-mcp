@@ -170,6 +170,12 @@ Env tab. Redeploy if you changed a secret in step 2.
 
 Until the grant exists, the server still deploys, and every tool says how to connect it.
 
+**Per user.** When the foro project marks the `exact` grant per user, as the Exact Online
+blueprint does, there is no single connection: every member signs in to Exact as themselves the
+first time they use the server, and acts as their own Exact user from then on. Exact then
+records each booking under the member who made it, and allows each member only what their own
+Exact user may. A shared grant works as described above.
+
 ## Limits
 
 - Exact allows about 60 calls a minute and 5,000 a day per company.

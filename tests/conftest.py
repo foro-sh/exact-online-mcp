@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
+from exact_mcp import tokens as tokens_module
 from exact_mcp.client import ExactClient
 from exact_mcp.config import load_settings
 from exact_mcp.tokens import BrokerTokens
@@ -63,5 +64,19 @@ def client(exact, settings, sleeps):
 
     http = exact.http()
     tokens = BrokerTokens(http, settings, clock=lambda: NOW)
-    tokens._cached = ("access-1", NOW + timedelta(minutes=9))
+    tokens._slot(None).cached = ("access-1", NOW + timedelta(minutes=9))
     return ExactClient(http, tokens, settings, sleep=sleep, clock=lambda: NOW.timestamp())
+
+
+@pytest.fixture
+def caller(monkeypatch):
+    """Sets the headers foro's gate added to the current request."""
+    headers: dict[str, str] = {}
+    monkeypatch.setattr(tokens_module, "get_http_headers", lambda: headers)
+
+    def set_caller(subject: str | None, handle: str | None = None) -> None:
+        headers.clear()
+        if subject:
+            headers.update({"x-foro-subject": subject, "x-foro-caller": handle or f"handle-{subject}"})
+
+    return set_caller
