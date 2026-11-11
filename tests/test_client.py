@@ -1,3 +1,6 @@
+import hashlib
+from datetime import timedelta
+
 import httpx
 import pytest
 
@@ -35,6 +38,26 @@ async def test_small_limit_uses_top_and_sends_auth_and_json_headers(client, exac
     assert request.url.params["$select"] == "ID,Name"
     assert request.headers["Authorization"] == "Bearer access-1"
     assert request.headers["Accept"] == "application/json"
+
+
+async def test_each_caller_gets_their_own_default_division(client, exact, caller):
+    client._division = None
+    for subject in ("alice", "bob"):
+        client._tokens._slot(subject).cached = (subject, NOW + timedelta(minutes=9))
+
+    def handler(request):
+        if request.url.path.endswith("/current/Me"):
+            division = {"Bearer alice": 1, "Bearer bob": 2}[request.headers["Authorization"]]
+            return httpx.Response(200, json=odata([{"CurrentDivision": division, "FullName": "D", "UserName": "d"}]))
+        return httpx.Response(200, json=odata([]))
+
+    exact.handler = handler
+    for subject in ("alice", "bob", "alice"):
+        caller(subject)
+        await client.list("crm/Accounts", select=["ID"], limit=1)
+
+    paths = [r.url.path for r in exact.requests if not r.url.path.endswith("/current/Me")]
+    assert paths == ["/api/v1/1/crm/Accounts", "/api/v1/2/crm/Accounts", "/api/v1/1/crm/Accounts"]
 
 
 async def test_explicit_division_overrides_the_default(client, exact):
@@ -116,6 +139,7 @@ async def test_unauthorised_reloads_the_token_and_retries_once(client, exact):
 
     assert await client.list("crm/Accounts", select=["ID"], limit=1) == []
     assert str(exact.requests[1].url) == f"{BROKER}/grants/exact"
+    assert exact.requests[1].headers["x-foro-rejected-token"] == hashlib.sha256(b"access-1").hexdigest()
     assert exact.requests[2].headers["Authorization"] == "Bearer access-2"
 
 

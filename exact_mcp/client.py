@@ -7,7 +7,7 @@ import httpx
 
 from . import odata
 from .config import Settings
-from .tokens import BrokerTokens
+from .tokens import MAX_CALLERS, BrokerTokens, caller
 
 PAGE_SIZE = 60
 # Waiting out the per-minute limit is fine inside a tool call; the daily limit is not.
@@ -62,6 +62,8 @@ class ExactClient:
         self._tokens = tokens
         self._base_url = settings.base_url
         self._division = settings.division
+        # Per caller: with a per-user grant each member's own Exact user has its own current division.
+        self._current_divisions: dict[str | None, int] = {}
         self._sleep = sleep
         self._clock = clock
 
@@ -81,9 +83,14 @@ class ExactClient:
     async def division(self, override: int | None = None) -> int:
         if override is not None:
             return override
-        if self._division is None:
-            self._division = (await self.me())["CurrentDivision"]
-        return self._division
+        if self._division is not None:
+            return self._division
+        key = caller()[1]
+        if key not in self._current_divisions:
+            if len(self._current_divisions) >= MAX_CALLERS:
+                self._current_divisions.clear()
+            self._current_divisions[key] = (await self.me())["CurrentDivision"]
+        return self._current_divisions[key]
 
     async def list(
         self,
@@ -174,14 +181,15 @@ class ExactClient:
     ) -> httpx.Response:
         # Retrying is safe for writes too: Exact refused the request, so nothing was booked.
         for attempt in range(2):
-            headers = {"Authorization": f"Bearer {await self._tokens.access_token()}", "Accept": accept}
+            token = await self._tokens.access_token()
+            headers = {"Authorization": f"Bearer {token}", "Accept": accept}
             if content_type:
                 headers["Content-Type"] = content_type
             response = await self._http.request(method, url, params=params, json=json, content=content, headers=headers)
             retry = attempt == 0
             if response.status_code == 401 and retry:
                 # The cached token may have been revoked early; fetch it again once.
-                self._tokens.invalidate()
+                self._tokens.invalidate(token)
                 continue
             if response.status_code == 429:
                 if response.headers.get("X-RateLimit-Remaining") == "0":
