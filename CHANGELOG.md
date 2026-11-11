@@ -1,3 +1,9 @@
+## [0.2.1](https://github.com/foro-sh/exact-online-mcp/compare/v0.2.0...v0.2.1) (2026-11-11)
+
+### Bug Fixes
+
+* declare the python runtime so foro can deploy with package.json present ([16f1985](https://github.com/foro-sh/exact-online-mcp/commit/16f1985c5ebb1bb6eeb92c29c068c08f50e6d262))
+
 ## [0.2.0](https://github.com/foro-sh/exact-online-mcp/compare/v0.1.0...v0.2.0) (2026-11-10)
 
 ### Features
