@@ -1,0 +1,36 @@
+name: MCP Registry
+
+# semantic-release publishes with the foro-release app token, so its releases
+# trigger this (a GITHUB_TOKEN release would not). Re-run the job to retry.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish sh.foro/exact-online
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install mcp-publisher
+        run: |
+          curl -sSfL -o mcp-publisher.tgz https://github.com/modelcontextprotocol/registry/releases/download/v1.8.16/mcp-publisher_linux_amd64.tar.gz
+          echo "6e2f799550cf843c6fd3350498d56cc49be3dc0af1e6237eb0e6435c7a9d5c05  mcp-publisher.tgz" | sha256sum -c
+          tar xzf mcp-publisher.tgz mcp-publisher
+
+      # The key's public half is served at https://foro.sh/.well-known/mcp-registry-auth.
+      - name: Publish
+        env:
+          MCP_PRIVATE_KEY: ${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          jq --arg v "${TAG#v}" '.version = $v' server.json > server.json.tmp
+          mv server.json.tmp server.json
+          ./mcp-publisher login http --domain foro.sh
+          ./mcp-publisher publish
