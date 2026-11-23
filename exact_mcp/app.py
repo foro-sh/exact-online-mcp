@@ -1,5 +1,9 @@
+import base64
+from pathlib import Path
+
 import httpx
 from fastmcp import FastMCP
+from mcp.types import Icon
 
 from . import tools, toolsets
 from .client import ExactClient
@@ -18,6 +22,11 @@ everything. Check a booking with dry_run first when anything about it is uncerta
 their expected_total, and never pass allow_duplicate to get past a refusal without asking the
 user. The book_purchase_invoices and reconcile_open_items prompts walk through the usual work."""
 
+# Sent in the initialize handshake, so clients show the logo without fetching a favicon. A data
+# URI, because the server doesn't know which host it's deployed under.
+_ICON_PNG = (Path(__file__).resolve().parent.parent / "icon.png").read_bytes()
+ICON = Icon(src="data:image/png;base64," + base64.b64encode(_ICON_PNG).decode(), mime_type="image/png")
+
 
 class Connection:
     """Built on the first tool call, not at startup, so a freshly templated server deploys and
@@ -35,7 +44,7 @@ class Connection:
 
 
 def create_server() -> FastMCP:
-    mcp = FastMCP("exact-online", instructions=INSTRUCTIONS)
+    mcp = FastMCP("exact-online", instructions=INSTRUCTIONS, icons=[ICON])
     get_client = Connection().client
     tools.register(mcp, get_client)
     toolsets.register(mcp, get_client)
