@@ -1,3 +1,9 @@
+## [0.5.0](https://github.com/foro-sh/exact-online-mcp/compare/v0.4.1...v0.5.0) (2026-11-23)
+
+### Features
+
+* advertise the Exact Online logo in the MCP handshake ([35ac2ea](https://github.com/foro-sh/exact-online-mcp/commit/35ac2ea91cee7b47756fdfa454d4b1bb6fdc7fbe))
+
 ## [0.4.1](https://github.com/foro-sh/exact-online-mcp/compare/v0.4.0...v0.4.1) (2026-11-23)
 
 ### Bug Fixes
