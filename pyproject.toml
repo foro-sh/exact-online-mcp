@@ -29,6 +29,7 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 [tool.foro]
 # package.json is only semantic-release tooling; this file is the MCP server.
 runtime = "python"
+icon = "icon.png"
 
 # Prefills Connect on the project's Env tab. Exact runs one host per region: outside the
 # Netherlands, edit both URLs there to your region's host (see the README).
