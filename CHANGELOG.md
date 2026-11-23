@@ -1,3 +1,9 @@
+## [0.4.1](https://github.com/foro-sh/exact-online-mcp/compare/v0.4.0...v0.4.1) (2026-11-23)
+
+### Bug Fixes
+
+* **deps:** bump dnspython to 2.9.2 for CVE-2026-128089 ([4bc6404](https://github.com/foro-sh/exact-online-mcp/commit/4bc640442fd4af34a2fbdf1cff86221296183771))
+
 ## [0.4.0](https://github.com/foro-sh/exact-online-mcp/compare/v0.3.0...v0.4.0) (2026-11-23)
 
 ### Features
