@@ -1,0 +1,24 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "sh.foro/exact-online",
+  "title": "Exact Online",
+  "description": "Exact Online accounting: customers, invoices, receivables, ledger, reports. Read-only by default.",
+  "version": "0.3.0",
+  "websiteUrl": "https://docs.foro.sh/exact-online",
+  "repository": {
+    "url": "https://github.com/foro-sh/exact-online-mcp",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://{slug}.foro.sh/mcp",
+      "variables": {
+        "slug": {
+          "description": "Your server's slug, shown after you set up the Exact Online blueprint on foro",
+          "isRequired": true
+        }
+      }
+    }
+  ]
+}
