@@ -359,3 +359,9 @@ async def test_describe_resource_lists_the_fields_query_may_read(server, exact):
 
     assert fields == [{"name": "ID", "type": "Edm.Guid"}, {"name": "City", "type": "Edm.String"}]
     assert exact.requests[0].url.path == "/api/v1/123/crm/$metadata"
+
+
+def test_server_advertises_icon():
+    [icon] = create_server().icons
+    assert icon.mime_type == "image/png"
+    assert icon.src.startswith("data:image/png;base64,iVBORw0KGgo")
