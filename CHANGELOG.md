@@ -1,3 +1,10 @@
+## [0.4.0](https://github.com/foro-sh/exact-online-mcp/compare/v0.3.0...v0.4.0) (2026-11-23)
+
+### Features
+
+* show the Exact Online logo as the connector icon ([b9f8061](https://github.com/foro-sh/exact-online-mcp/commit/b9f80612825a97b50fa17918fe7c3a7dd691e7a7))
+* show the Exact Online logo as the connector icon ([#17](https://github.com/foro-sh/exact-online-mcp/issues/17)) ([989a1e1](https://github.com/foro-sh/exact-online-mcp/commit/989a1e1531531d915efac05e8eabc57f53644f49))
+
 ## [0.3.0](https://github.com/foro-sh/exact-online-mcp/compare/v0.2.1...v0.3.0) (2026-11-11)
 
 ### Features
