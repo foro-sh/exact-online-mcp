@@ -124,3 +124,4 @@ def test_file_types_are_told_apart_by_their_first_bytes():
     assert uploads.file_type(b"\x89PNG\r\n\x1a\n...") == ("image/png", ".png")
     assert uploads.file_type(b"\xff\xd8\xff\xe0") == ("image/jpeg", ".jpg")
     assert uploads.file_type(b"PK\x03\x04") is None
+    assert uploads.file_type(b"<html><script>") is None

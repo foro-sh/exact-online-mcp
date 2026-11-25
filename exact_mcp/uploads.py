@@ -32,7 +32,7 @@ FILE_TYPES = (
     (b"%PDF-", "application/pdf", ".pdf"),
     (b"\x89PNG\r\n\x1a\n", "image/png", ".png"),
     (b"\xff\xd8\xff", "image/jpeg", ".jpg"),
-    (b"<", "application/xml", ".xml"),
+    (b"<?xml", "application/xml", ".xml"),
 )
 
 
@@ -242,18 +242,18 @@ DROP = """<h1>Upload a file to Exact Online</h1>{expecting}
 <p id="status" role="status"></p>
 <script>
 const drop = document.getElementById("drop"), input = document.getElementById("file"),
-  status = document.getElementById("status");
+  note = document.getElementById("status");
 async function send(file) {{
-  status.textContent = "Uploading " + file.name + "…";
+  note.textContent = "Uploading " + file.name + "…";
   const r = await fetch(location.href, {{method: "PUT", body: file,
     headers: {{"X-File-Name": encodeURIComponent(file.name)}}}}).catch(() => null);
   const body = r ? await r.json().catch(() => ({{}})) : {{}};
   if (r && r.ok) {{
     drop.remove();
-    status.textContent = "Uploaded " + file.name + ", " + Math.ceil(file.size / 1024) +
+    note.textContent = "Uploaded " + file.name + ", " + Math.ceil(file.size / 1024) +
       " KB. You can tell your assistant it's done.";
   }} else {{
-    status.textContent = "Upload failed: " + (body.error || "network error");
+    note.textContent = "Upload failed: " + (body.error || "network error");
   }}
 }}
 input.onchange = () => input.files[0] && send(input.files[0]);
