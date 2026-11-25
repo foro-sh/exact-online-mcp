@@ -1,3 +1,10 @@
+## [0.6.0](https://github.com/foro-sh/exact-online-mcp/compare/v0.5.0...v0.6.0) (2026-11-25)
+
+### Features
+
+* describe the server for the MCP Registry ([ca28d81](https://github.com/foro-sh/exact-online-mcp/commit/ca28d81743026682ef8ef3a72ae227e2f24c77d9))
+* list the server in the MCP Registry ([#16](https://github.com/foro-sh/exact-online-mcp/issues/16)) ([afec381](https://github.com/foro-sh/exact-online-mcp/commit/afec38109178af4d900959cb8d8df63b432c4c45))
+
 ## [0.5.0](https://github.com/foro-sh/exact-online-mcp/compare/v0.4.1...v0.5.0) (2026-11-23)
 
 ### Features
