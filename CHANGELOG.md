@@ -1,3 +1,9 @@
+## [0.6.1](https://github.com/foro-sh/exact-online-mcp/compare/v0.6.0...v0.6.1) (2026-11-25)
+
+### Bug Fixes
+
+* point the handshake icon at an https URL ([cb5c5ce](https://github.com/foro-sh/exact-online-mcp/commit/cb5c5ce8655def9aab390507a4c70cdff036e031))
+
 ## [0.6.0](https://github.com/foro-sh/exact-online-mcp/compare/v0.5.0...v0.6.0) (2026-11-25)
 
 ### Features
