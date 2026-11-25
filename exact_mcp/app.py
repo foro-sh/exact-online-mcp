@@ -1,6 +1,3 @@
-import base64
-from pathlib import Path
-
 import httpx
 from fastmcp import FastMCP
 from mcp.types import Icon
@@ -22,10 +19,9 @@ everything. Check a booking with dry_run first when anything about it is uncerta
 their expected_total, and never pass allow_duplicate to get past a refusal without asking the
 user. The book_purchase_invoices and reconcile_open_items prompts walk through the usual work."""
 
-# Sent in the initialize handshake, so clients show the logo without fetching a favicon. A data
-# URI, because the server doesn't know which host it's deployed under.
-_ICON_PNG = (Path(__file__).resolve().parent.parent / "icon.png").read_bytes()
-ICON = Icon(src="data:image/png;base64," + base64.b64encode(_ICON_PNG).decode(), mime_type="image/png")
+# Sent in the handshake so clients can show the logo. An https URL, since not every client renders
+# a data URI; the copy in this repo, because the server does not know its deployed host.
+ICON = Icon(src="https://raw.githubusercontent.com/foro-sh/exact-online-mcp/main/icon.png", mime_type="image/png")
 
 
 class Connection:

@@ -364,4 +364,4 @@ async def test_describe_resource_lists_the_fields_query_may_read(server, exact):
 def test_server_advertises_icon():
     [icon] = create_server().icons
     assert icon.mime_type == "image/png"
-    assert icon.src.startswith("data:image/png;base64,iVBORw0KGgo")
+    assert icon.src.startswith("https://")
