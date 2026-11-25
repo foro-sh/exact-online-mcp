@@ -44,7 +44,7 @@ the user's current division in Exact.
 
 These are listed too. Most need a module that only some Exact packages have. In `bookkeeping`,
 `book_purchase_invoice`, `book_sales_invoice`, `book_journal_entry`, `create_account`,
-`upload_document` and `match_open_items` write; `unbooked_documents`, `suggest_booking` and
+`create_upload`, `upload_document` and `match_open_items` write; `unbooked_documents`, `suggest_booking` and
 `reconciliation_suggestions` only read. `EXACT_TOOLSETS` is not used.
 
 | Group | Tools | Needs |
@@ -56,7 +56,7 @@ These are listed too. Most need a module that only some Exact packages have. In 
 | `documents` | `search_documents`, `get_document` | |
 | `changes` | `recent_changes` | |
 | `query` | `describe_resource`, `query` | |
-| `bookkeeping` | `unbooked_documents`, `suggest_booking`, `book_purchase_invoice`, `book_sales_invoice`, `book_journal_entry`, `create_account`, `upload_document`, `reconciliation_suggestions`, `match_open_items` | An Exact user allowed to book entries and add accounts and documents (see below) |
+| `bookkeeping` | `unbooked_documents`, `suggest_booking`, `book_purchase_invoice`, `book_sales_invoice`, `book_journal_entry`, `create_account`, `create_upload`, `upload_document`, `reconciliation_suggestions`, `match_open_items` | An Exact user allowed to book entries and add accounts and documents (see below) |
 
 `list_contacts` only reads a contact's name, job title and business email and phone.
 `project_hours` adds hours up per project and hour type, not per person.
@@ -76,9 +76,32 @@ identifies a person, names a user or holds a file (see `exact_mcp/scope.py`).
 | `book_sales_invoice` | Books a sales invoice made outside Exact, such as in a webshop |
 | `book_journal_entry` | Books a balanced general journal entry: accruals, depreciation, reclassifications, clearing a suspense account |
 | `create_account` | Adds a supplier or customer |
+| `create_upload` | A short-lived URL to upload an invoice's file to, for `upload_document` (see below) |
 | `upload_document` | Stores an invoice's file in Exact, to book with its `document_id` |
 | `reconciliation_suggestions` | Sets of open receivables or payables that settle each other: an account that adds up to zero, a payment that names its invoices, or a payment with exactly one invoice of its amount. In a description, only a number or reference of at least four characters counts |
 | `match_open_items` | Matches such a set in Exact, so the invoice and its payment are no longer open |
+
+An agent can't pass a file in a tool call without typing it out as Base64, which is slow, costly
+and breaks on one wrong character, so `upload_document` takes an `upload_id` instead:
+
+1. `create_upload` returns an `upload_url` and a ready `curl` command.
+2. The file reaches that URL in one of two ways:
+   - The agent PUTs it from a shell (Claude Code, Cowork, code execution). The server answers
+     with the `upload_id`, size, SHA-256 and file type.
+   - A person opens the URL in a browser and drops the file on the page it shows. This works in
+     any client, including chat without code execution.
+3. `upload_document(upload_id=…)` stores it in Exact, inside a normal MCP call, so with a
+   per-user grant it uses the caller's own Exact token.
+
+An upload URL works once, for 15 minutes, and only for the user who made it. It takes PDF, PNG,
+JPEG and XML (UBL e-invoices) files up to 10 MB, checked by their first bytes. Files wait in the
+server's memory, at most 50 MB at a time, so the PUT and `upload_document` must reach the same
+replica. The token in the URL is the only credential, so the server keeps only its hash and
+leaves it out of the access log. `content_base64` still works for a tiny file.
+
+Claude.ai's code execution sandbox only reaches allowed domains: an org owner has to add the
+server's host (`*.foro.sh` or your custom domain) before an agent there can PUT the file. Without
+that, the agent gives the user the link instead.
 
 It also adds two prompts that walk an agent through the usual work: `book_purchase_invoices`
 and `reconcile_open_items`. The first reads each invoice's file with `get_document`.
@@ -195,6 +218,7 @@ Exact user may. A shared grant works as described above.
 - `get_document` makes one call for the list of files and one per file, downloading each from
   its `Url` on Exact's host over https. It returns at most 10 MB of files, which go into the
   agent's context, and `upload_document` takes at most 10 MB.
+- An upload through `create_upload` costs no Exact calls until `upload_document`.
 - Booking an invoice makes about six calls: the supplier or customer, the journals, the chart of
   accounts, the VAT codes, the check for a double booking, and the booking itself, plus one for
   cost centers and one for cost units when lines name them. `match_open_items` makes four, and

@@ -5,6 +5,7 @@ read-only, so a foro project policy can allow them and keep the writes off."""
 import base64
 import binascii
 import re
+import shlex
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
@@ -14,7 +15,7 @@ from typing import Annotated, Literal
 from fastmcp import FastMCP
 from pydantic import AfterValidator, BaseModel, Field
 
-from .. import matching, odata
+from .. import matching, odata, tokens, uploads
 from ..client import ExactError
 from ..tools import JOURNAL_TYPES, VAT_CODE_FIELDS, Division, Limit
 from .documents import MAX_ATTACHMENT_BYTES
@@ -845,9 +846,41 @@ def register(tool, get_client) -> None:
         return {"created": True, "ID": created.get("ID"), "account": body}
 
     @tool(writes=True)
+    async def create_upload(
+        file_name: Annotated[
+            str | None, Field(description="The file you expect, shown to a person on the upload page.")
+        ] = None,
+    ) -> dict:
+        """A short-lived URL to upload a file to, for upload_document(upload_id). PUT the file to
+        upload_url from a shell, as in `curl`; never inline its bytes in a tool call. If you can't
+        reach the URL yourself, give the link to the user: opening it shows a page to drop the file
+        on. Call upload_document(upload_id) once the PUT succeeded or the user says it's done. The
+        URL works once, for 15 minutes, and takes PDF, PNG, JPEG and XML files."""
+        base = uploads.public_base()
+        upload, token = uploads.STORE.create(tokens.caller()[1], file_name)
+        url = f"{base}/uploads/{token}"
+        local = file_name or "invoice.pdf"
+        return {
+            "upload_id": upload.id,
+            "upload_url": url,
+            "expires_at": uploads.expires_at(upload),
+            "max_bytes": MAX_ATTACHMENT_BYTES,
+            "curl": f"curl --fail -T {shlex.quote(local)} '{url}'",
+        }
+
+    @tool(writes=True)
     async def upload_document(
-        file_name: Annotated[str, Field(description="The file's name, such as invoice-2026-114.pdf.")],
-        content_base64: Annotated[str, Field(description="The file, Base64-encoded.")],
+        file_name: Annotated[
+            str | None,
+            Field(
+                description="The file's name, such as invoice-2026-114.pdf. Default with upload_id: the uploaded one's."
+            ),
+        ] = None,
+        content_base64: Annotated[
+            str | None,
+            Field(description="The file, Base64-encoded. Only for tiny files; use create_upload otherwise."),
+        ] = None,
+        upload_id: Annotated[str | None, Field(description="A file uploaded through create_upload.")] = None,
         kind: Literal["purchase_invoice", "sales_invoice"] = "purchase_invoice",
         subject: Annotated[str | None, Field(description="Default: the file name.")] = None,
         account_id: Annotated[str | None, Field(description="The supplier or customer it is from or to.")] = None,
@@ -855,15 +888,42 @@ def register(tool, get_client) -> None:
         division: Division = None,
     ) -> dict:
         """Store an invoice's file in Exact as a document, to book with book_purchase_invoice's
-        document_id, so the booking and its source stay together."""
+        document_id, so the booking and its source stay together. Give the file as an upload_id
+        from create_upload, or, for a tiny file only, as content_base64."""
+        if (content_base64 is None) == (upload_id is None):
+            raise ValueError("Give either upload_id or content_base64, not both or neither.")
+        if upload_id is None:
+            if not file_name:
+                raise ValueError("file_name is required with content_base64.")
+            try:
+                data = base64.b64decode(content_base64, validate=True)
+            except (binascii.Error, ValueError) as err:
+                raise ValueError("content_base64 isn't valid Base64.") from err
+            if not data:
+                raise ValueError("The file is empty.")
+            if len(data) > MAX_ATTACHMENT_BYTES:
+                raise ValueError(
+                    f"The file is {len(data):,} bytes; at most {MAX_ATTACHMENT_BYTES:,} can be uploaded here."
+                )
+            return await _store_document(data, file_name, kind, subject, account_id, document_date, division)
+        upload = uploads.STORE.take(upload_id, tokens.caller()[1])
         try:
-            data = base64.b64decode(content_base64, validate=True)
-        except (binascii.Error, ValueError) as err:
-            raise ValueError("content_base64 isn't valid Base64.") from err
-        if not data:
-            raise ValueError("The file is empty.")
-        if len(data) > MAX_ATTACHMENT_BYTES:
-            raise ValueError(f"The file is {len(data):,} bytes; at most {MAX_ATTACHMENT_BYTES:,} can be uploaded here.")
+            result = await _store_document(
+                upload.data,
+                file_name or upload.file_name or "document" + uploads.file_type(upload.data)[1],
+                kind,
+                subject,
+                account_id,
+                document_date,
+                division,
+            )
+        except BaseException:
+            uploads.STORE.release(upload)
+            raise
+        uploads.STORE.finish(upload)
+        return result
+
+    async def _store_document(data, file_name, kind, subject, account_id, document_date, division) -> dict:
         client = await get_client()
         div = await client.division(division)
         types = await client.list(

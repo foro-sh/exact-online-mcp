@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 
 from fastmcp import FastMCP
 
+from .. import uploads
 from ..client import ExactClient
 from ..tools import toolset_tools
 from . import bookkeeping, changes, crm, documents, orders, projects, query, subscriptions
@@ -25,3 +26,4 @@ def register(mcp: FastMCP, get_client: Callable[[], Awaitable[ExactClient]]) -> 
     for name, module in MODULES.items():
         module.register(toolset_tools(mcp, name), get_client)
     bookkeeping.register_prompts(mcp)
+    uploads.register_routes(mcp)

@@ -20,7 +20,9 @@ has more than one, and financial_overview for a first look at how one is doing. 
 roughly 60 API calls a minute per company, so prefer a narrow filter over paging through
 everything. Check a booking with dry_run first when anything about it is uncertain, give invoices
 their expected_total, and never pass allow_duplicate to get past a refusal without asking the
-user. The book_purchase_invoices and reconcile_open_items prompts walk through the usual work."""
+user. To store a file in Exact, get a URL from create_upload and PUT the file to it, or give the
+link to the user to drop it on; never type a file out as Base64. The book_purchase_invoices and
+reconcile_open_items prompts walk through the usual work."""
 
 # Sent in the initialize handshake, so clients show the logo without fetching a favicon. A data
 # URI, because the server doesn't know which host it's deployed under.

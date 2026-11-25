@@ -38,7 +38,7 @@ async def test_every_tool_is_listed_without_an_env_var(monkeypatch):
     monkeypatch.delenv("EXACT_TOOLSETS", raising=False)
     server = create_server()
     listed = await tool_names(server)
-    assert len(listed) == 28 + 16 + 9
+    assert len(listed) == 28 + 16 + 10
     assert "book_purchase_invoice" in listed
     assert "dry_run" in server.instructions
     async with Client(server) as mcp:
@@ -55,10 +55,11 @@ async def test_every_toolset_is_known_and_only_bookkeeping_writes(server):
         "book_sales_invoice",
         "book_journal_entry",
         "create_account",
+        "create_upload",
         "upload_document",
         "match_open_items",
     }
-    assert len(listed) == 16 + 9
+    assert len(listed) == 16 + 10
 
 
 async def test_get_sales_order_adds_its_lines(server, exact):
